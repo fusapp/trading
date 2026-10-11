@@ -1335,6 +1335,31 @@ Eval is CLOSED: decision-path changes now allowed on main, but each HIGH-blast i
   çoklu stop'ta en yüksek; order book hatası snapshot'ı düşürmez. 6 yeni test, suite 1833 pass /
   2 fail = laptop ölü Alpaca key (401). Box'a DEPLOY EDİLMEDİ (prod pull #52 kararına bağlı).
 
+## Daily loop 2026-10-11 (prod-fusapp01 @cd9ecbb → 1d83eeb; SPY gate'i bir seans kaymış pencereyle ölçülüyormuş)
+- **Canlı durum** (box localhost, Pazar — son seans Cuma 10-09): eval 1M **GO** 23/10 gün, Sharpe 2.93,
+  Sortino 5.68, MaxDD −1.52%, Calmar 28.07, +3.15% vs SPY **+2.37%** (fix öncesi +2.99 okunuyordu).
+  3M: GO 66 gün, Sharpe 2.11, MaxDD −4.25%, +8.04% vs SPY +3.82% (önce +3.38). Equity $112,628.69,
+  cash $44,814.66, 6 pozisyon (AAPL/AMZN/META/MSFT/NVDA/UNH, hepsi stop'lu), inception P&L +$12,628.69.
+- [x] **Equity bar'ları bir gün geç etiketleniyordu** (1d83eeb, prod'a deploy + canlı doğrulandı).
+  Alpaca 1D bar'ı seans günü **20:00 New York** damgalıyor = ertesi gün 00:00 UTC; `_equity_series`
+  UTC okuyordu → Cuma kapanışı "Cumartesi", hiç Pazartesi yok. Sonuçları: (1) `_spy_return` SPY'ı
+  equity baseline'ından BİR SONRAKİ seanstan okuyordu → ilk seansın SPY hareketi benchmark'tan
+  düşüyordu (1M: 2.99 vs doğru 2.37; 3M ters yönde 3.38 vs 3.82 — kayma iki yöne de vuruyor, yani
+  10-10'daki "SPY'ı geçemiyor" NO-GO okuması da aynı kaymalı pencerenin üstündeydi); (2)
+  `EVAL_START_DATE` cutoff'tan önceki seansı baseline olarak içeri alıyordu (box'ta şu an set değil);
+  (3) `/v1/portfolio/history` her noktası + app'teki SPY overlay (tarih eşleştiriyor) bir gün kaymış.
+  Fix: bar'lar New York seans tarihiyle indexleniyor (UTC midnight, index tipi aynı). Test fixture'ları
+  da UTC midnight damgalıyordu (aynı yanlış varsayım) → Alpaca'nın gerçek damgasına çevrildi; canlı
+  damgalar seans tarihlerini sabitliyor. 5 yeni/değişen test eski kodda kırmızı. Suite 2322 pass /
+  2 fail = laptop Alpaca key 401 (değişiklik olmadan da düşüyor, doğrulandı). Karar yoluna dokunmuyor,
+  sadece API restart; OTA gerekmedi.
+- Not: laptop→box `ssh` komutları stdin açıkken ara ara asılı kalıyor (remote komut bitmiş, kanal
+  kapanmıyor) → daima `ssh -n` / `</dev/null`. pytest de `</dev/null` ile koş (stdin'li koşu 73 dk asıldı).
+- **Sıradaki:** (a) alarm hedefi hâlâ boş (`alerting` üçü de false) = Canberk: telefonda giriş +
+  bildirim izni; (b) SPY hard-gate kararı artık doğru hizalı sayıyla verilebilir = Canberk;
+  (c) StockTwits kararı = Canberk; (d) eval-safe aday: `api/routes/prices.py` + `backtest/survivor_prices.py`
+  `date.fromtimestamp` box TZ'sine (Etc/UTC) bağlı — exchange TZ'ye sabitlenebilir (bugün doğru çalışıyor).
+
 ## Daily loop 2026-10-10 (prod-fusapp01 @d658c45 → 7c9e176; eval 1M API "GO" ama SPY'ı geçemiyor)
 - **Canlı durum** (box localhost): eval 1M API verdict **GO** — Sharpe 2.40, Sortino 4.60, MaxDD
   −1.52%, +2.54% vs SPY +2.99% (beats_spy gate **false**; kodda SPY hard gate değil, flag), 22/10 gün.

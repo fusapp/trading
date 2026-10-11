@@ -112,6 +112,83 @@ class TestEquitySeries:
         assert _equity_series({"timestamp": [], "equity": []}).empty
         assert isinstance(_equity_series({}), pd.Series)
 
+    def test_bars_are_indexed_by_session_date(self) -> None:
+        # Live 1D stamps (2026-10-11 read): Fri 10-02, Mon 10-05, Fri 10-09
+        # sessions, each at 20:00 New York = 00:00 UTC the next day.
+        s = _equity_series(
+            {"timestamp": _LIVE_STAMPS, "equity": [111_514.70, 112_405.50, 112_628.69]}
+        )
+        assert [d.date().isoformat() for d in s.index] == [
+            "2026-10-02",
+            "2026-10-05",
+            "2026-10-09",
+        ]
+        assert all(d.tz is not None and d.utcoffset().total_seconds() == 0 for d in s.index)
+
+    def test_session_date_survives_a_new_york_midnight_stamp(self) -> None:
+        # 2026-10-09 00:00 New York (04:00 UTC): left-labelled bars name the
+        # same session, so the reading cannot depend on which stamp Alpaca uses.
+        s = _equity_series({"timestamp": [1791518400], "equity": [100_000.0]})
+        assert s.index[0].date().isoformat() == "2026-10-09"
+
+
+# Fri 10-02, Mon 10-05, Fri 10-09 2026 — 1D bars as Alpaca returned them.
+_LIVE_STAMPS = [1790985600, 1791244800, 1791590400]
+
+
+class _FakeAlpaca:
+    def __init__(self, history: dict) -> None:
+        self._history = history
+
+    def __enter__(self) -> _FakeAlpaca:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def portfolio_history(self, period: str, timeframe: str) -> dict:
+        return self._history
+
+
+class TestScorecardWindow:
+    def _build(self, monkeypatch, history: dict, start: str | None = None):
+        import scripts.eval_report as er
+
+        seen: dict[str, object] = {}
+
+        def _spy(a, b):
+            seen["spy"] = (a.date().isoformat(), b.date().isoformat())
+            return 0.01
+
+        monkeypatch.setattr(er, "AlpacaClient", lambda: _FakeAlpaca(history))
+        monkeypatch.setattr(er, "_spy_return", _spy)
+        monkeypatch.setattr(er, "_risk_free_rate", lambda: (0.0, "none"))
+        if start is None:
+            monkeypatch.delenv("EVAL_START_DATE", raising=False)
+        else:
+            monkeypatch.setenv("EVAL_START_DATE", start)
+        return er.build_scorecard("1M", benchmark=True), seen
+
+    def test_spy_window_starts_on_the_baseline_session(self, monkeypatch) -> None:
+        # The equity baseline is Friday 10-02's close, so SPY must be read from
+        # 10-02 too; the UTC reading asked Polygon for Sat 10-03 onward and
+        # silently dropped Monday's SPY move from the benchmark.
+        history = {"timestamp": _LIVE_STAMPS, "equity": [100_000.0, 101_000.0, 102_000.0]}
+        sc, seen = self._build(monkeypatch, history)
+        assert seen["spy"] == ("2026-10-02", "2026-10-09")
+        assert sc.days == 3
+
+    def test_eval_start_date_starts_at_that_session(self, monkeypatch) -> None:
+        # Mon 10-05, Tue 10-06, Wed 10-07. A cutoff of Tuesday baselines on
+        # Tuesday's close; the one-day-late label read Monday's close as
+        # "10-06" and smuggled the pre-cutoff session in as the baseline.
+        stamps = [1791244800, 1791331200, 1791417600]
+        history = {"timestamp": stamps, "equity": [100_000.0, 101_000.0, 102_000.0]}
+        sc, seen = self._build(monkeypatch, history, start="2026-10-06")
+        assert sc.start_equity == 101_000.0
+        assert sc.days == 2
+        assert seen["spy"] == ("2026-10-06", "2026-10-07")
+
 
 def _equity(vals: list[float]) -> pd.Series:
     idx = pd.date_range("2026-01-01", periods=len(vals), freq="D", tz="UTC")

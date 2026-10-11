@@ -26,6 +26,7 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -40,6 +41,9 @@ MIN_TRADING_DAYS = 10  # below this the metrics are too noisy to trust
 HOLDOUT_MIN_DAYS = 60  # below this a walk-forward holdout split is meaningless
 # Out-of-sample Sharpe below IS Sharpe by more than this fraction = regime-fit warning.
 HOLDOUT_DEGRADE_FRAC = 0.5
+# Alpaca stamps a 1D equity bar at 20:00 New York on its session day, which is
+# 00:00 UTC of the NEXT calendar day; the session is the New York date.
+_EXCHANGE_TZ = ZoneInfo("America/New_York")
 
 
 @dataclass
@@ -66,12 +70,18 @@ class Scorecard:
 def _equity_series(history: dict) -> pd.Series:
     """Build a clean daily equity Series from Alpaca portfolio history.
 
+    Each bar is indexed by its exchange session date (UTC midnight of that
+    date). Reading the raw stamp in UTC labelled every close one day late —
+    Friday's close as Saturday, no Mondays at all — which started the SPY
+    benchmark one session after the equity baseline, cut EVAL_START_DATE one
+    session early, and dated every chart point wrong.
+
     Drops None/zero points and the leading flat segment before the first
     real position (clean-book days where equity never moved)."""
     ts = history.get("timestamp", [])
     eq = history.get("equity", [])
     pairs = [
-        (datetime.fromtimestamp(t, tz=UTC), float(e))
+        (pd.Timestamp(datetime.fromtimestamp(t, tz=_EXCHANGE_TZ).date(), tz=UTC), float(e))
         # strict: a length mismatch means Alpaca returned a malformed history,
         # and a silently truncated equity curve would produce a confident,
         # wrong Sharpe. Better to fail the report than to publish that.

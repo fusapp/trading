@@ -7,10 +7,13 @@ equity-series cleaning + drawdown math without touching the broker.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
+
+_NY = ZoneInfo("America/New_York")
 
 
 class _FakeAlpaca:
@@ -26,7 +29,9 @@ class _FakeAlpaca:
 
 
 def _ts(y: int, m: int, d: int) -> int:
-    return int(datetime(y, m, d, tzinfo=UTC).timestamp())
+    """The session's bar as Alpaca stamps it: 20:00 New York, which is already
+    the next calendar day in UTC."""
+    return int(datetime(y, m, d, 20, tzinfo=_NY).timestamp())
 
 
 def _make_client(history: dict, monkeypatch: pytest.MonkeyPatch) -> TestClient:
@@ -97,6 +102,18 @@ def test_eval_start_date_cutoff(monkeypatch: pytest.MonkeyPatch) -> None:
     assert b["days"] == 2
     assert b["start_equity"] == 100_000.0
     assert b["total_return_pct"] == 1.0
+
+
+def test_points_are_dated_by_session_not_utc(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Live stamps from 2026-10-11: Thu 10-08, Fri 10-09, Mon 10-12 sessions.
+    # Read in UTC they were Fri, Sat, Tue — a Saturday point and no Monday.
+    history = {
+        "timestamp": [1791504000, 1791590400, 1791849600],
+        "equity": [111_960.01, 112_628.69, 113_000.0],
+    }
+    client = _make_client(history, monkeypatch)
+    pts = client.get("/v1/portfolio/history").json()["points"]
+    assert [p["date"] for p in pts] == ["2026-10-08", "2026-10-09", "2026-10-12"]
 
 
 def test_empty_history(monkeypatch: pytest.MonkeyPatch) -> None:

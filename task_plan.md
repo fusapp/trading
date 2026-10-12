@@ -1335,6 +1335,41 @@ Eval is CLOSED: decision-path changes now allowed on main, but each HIGH-blast i
   çoklu stop'ta en yüksek; order book hatası snapshot'ı düşürmez. 6 yeni test, suite 1833 pass /
   2 fail = laptop ölü Alpaca key (401). Box'a DEPLOY EDİLMEDİ (prod pull #52 kararına bağlı).
 
+## Daily loop 2026-10-12 (prod-fusapp01 @17ea8f4 → e51894c; gece yarısından sonraki council'lar bir gün eski close okuyor)
+- **Canlı durum** (box localhost, Pazartesi seans öncesi): eval 1M **GO** 23/10 gün, Sharpe 2.93,
+  Sortino 5.68, MaxDD −1.52%, +3.15% vs SPY +2.37% (4 gate de yeşil). 3M GO 66 gün, Sharpe 2.11,
+  MaxDD −4.25%, +8.04% vs SPY +3.82%. Equity $112,844.83, cash $44,814.66, 6 pozisyon (hepsi
+  stop'lu), daily +$216.14 (overnight quote), inception P&L +$12,844.83. 10-09 gece koşusu exit 0,
+  0 errored, 0/190 naked, inert 27 run-day.
+- [x] **Bulgu: 00:00 UTC'den sonra council'lanan ticker'lar her gece T-1 close ile analiz ediliyor.**
+  Journal (09-22 → 10-10, her gece): `stockstats_utils | XOM: 1 trailing bar(s) through 2026-10-09
+  have no closing price; using 2026-10-08` — hep sırada sona kalan V/XOM/UNH (UNH = tutulan
+  pozisyon). Box cache CSV'si: 00:1x UTC'de indirilen dosyada son satır `2026-10-09,,,,,8078799`
+  (OHLC boş, volume settled 8,083,600'den az = ön-bar); 22:3x UTC'de indirilenler settled. Yani
+  ~%27'lik dilim (3/11) indikatörleri bir seans erken bitiriyor. Laptop'ta bugün yeniden
+  üretilemedi (Yahoo artık settled veriyor). Mekanizma adayları: (a) Yahoo son bar için adjclose
+  vermiyor → `auto_adjust` Adj Close/Close oranıyla OHLC'nin tamamını NaN'lar, volume kalır;
+  (b) Yahoo aynı güne ayrı bir "live" satır ekliyor → yfinance `fix_Yahoo_returning_live_separate`
+  (1d) aynı günlü çiftte *yeniyi tutup settled'ı atıyor*. Tetikleyici adayları: Yahoo'nun 20:00 ET
+  rollover'ı vs vendor'ın `end`=UTC bugün+1 parametresinin 00:00 UTC'de kayması (EDT'de aynı an).
+- [x] **`scripts/yahoo_close_probe.py`** (e51894c, prod'a pull) — read-only teşhis: ticker başına
+  Yahoo chart JSON'unun son satırları (UTC+NY damga, OHLCV, adjclose), vendor'ın birebir
+  `yf.download` çağrısı, aynısı `auto_adjust=False`, aynısı `end`+1 gün. Varyant hatası kayda
+  geçer, script hep 0 döner; trader'ın cache'ine dokunmaz (ubuntu kullanıcısı, ayrı yfinance
+  cache). 10 test; suite 2332 pass / 2 fail = laptop Alpaca key 401 (`/v2/clock`, değişiklikten
+  bağımsız). **Box'ta bu gece transient timer'lar** (`yf-probe-*`, reboot'ta kaybolur, kalıcı
+  config yok): 21:30, 23:30, 23:55, 00:10, 00:40, 01:30, 03:30 UTC × KO,XOM →
+  `/home/ubuntu/yf-probe/probe-20261012.jsonl`. Karar yoluna dokunmuyor, restart yok.
+- **Fix kararı probe'dan sonra** (karar girdisini değiştirir → branch + Canberk): (a) adjclose
+  yoksa: son bar için ham OHLC'yi kullan (son bar'da ayar oranı 1); (b) live satır ise: settled
+  satırı Alpaca/Polygon daily bar'dan doldur; tetikleyici saatse operasyonel çözüm de var —
+  `COUNCIL_PARALLELISM=2` (merged, kapalı) council'ları 00:00 UTC'den önce bitirir. Not: 11-01'de
+  DST bitince 20:00 ET = 01:00 UTC → saat tetikleyicisiyse pencere bir saat kayar.
+- **Sıradaki:** (a) yarın `probe-20261012.jsonl` + gece cache CSV'lerini oku, mekanizmayı seç,
+  fix'i branch'te yaz; (b) alarm hedefi hâlâ boş (#91 `unheard`) = Canberk; (c) StockTwits
+  kararı = Canberk; (d) eval-safe: `api/routes/prices.py` + `backtest/survivor_prices.py`
+  `fromtimestamp` exchange TZ'ye sabitleme (bugün UTC box'ta doğru).
+
 ## Daily loop 2026-10-11 (prod-fusapp01 @cd9ecbb → 1d83eeb; SPY gate'i bir seans kaymış pencereyle ölçülüyormuş)
 - **Canlı durum** (box localhost, Pazar — son seans Cuma 10-09): eval 1M **GO** 23/10 gün, Sharpe 2.93,
   Sortino 5.68, MaxDD −1.52%, Calmar 28.07, +3.15% vs SPY **+2.37%** (fix öncesi +2.99 okunuyordu).

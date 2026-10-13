@@ -1335,6 +1335,43 @@ Eval is CLOSED: decision-path changes now allowed on main, but each HIGH-blast i
   çoklu stop'ta en yüksek; order book hatası snapshot'ı düşürmez. 6 yeni test, suite 1833 pass /
   2 fail = laptop ölü Alpaca key (401). Box'a DEPLOY EDİLMEDİ (prod pull #52 kararına bağlı).
 
+## Daily loop 2026-10-13 (prod-fusapp01 @7d3b7bd, deploy YOK; 20:00 ET close boşluğu bulundu, fix branch'te)
+- **Canlı durum** (box localhost, Salı seans öncesi): eval 1M **GO** 20/10 gün, Sharpe 2.13,
+  Sortino 4.06, MaxDD −1.52%, Calmar 21.33, +2.14% vs SPY **+2.57%** → `beats_spy` FAIL (görev
+  tanımıyla NO-GO; kodda SPY hard gate değil). Equity $112,843.55, cash $44,814.66, 6 pozisyon
+  (hepsi stop'lu, UNH −7.3%), daily +$214.86. 10-12 gece koşusu exit 0, 11 council ~$23.7,
+  0/190 naked, 11/11 Hold → 0 emir (inert devam).
+- **Gün 23→20 düşüşü bizim bug'ımız DEĞİL:** Alpaca paper 10-12'yi (Columbus Day — NYSE açık,
+  banka tatili, 10-09 settlement 10-13'e kaydı) henüz roll etmedi: `last_equity` hâlâ 10-09
+  kapanışı ($112,628.69), 1W/1M/3M 1D history 10-09'da bitiyor, `/v2/calendar` 10-12'yi listeliyor.
+  1M penceresinin başı 09-09→09-14 kaydı, sonu ilerlemedi (3 seans düştü). Yarın tekrar bak:
+  10-12 bar'ı gelmezse eval her pencerede bir seans eksik okur.
+- **Naked all-clear 7. günde düştü (beklenen):** `all-clear for the 2026-10-06 exposure reached no
+  channel in 7 days; no longer retried`. 11dd987 sözünü tuttu; artık journal'da "ALERT [recovered]" yok.
+- [x] **Probe sonucu — mekanizma (a) da (b) de DEĞİL.** `probe-20261012.jsonl` (KO, XOM × 7 an):
+  21:30/23:30/23:55 UTC settled; **00:10 UTC (20:10 ET) Yahoo'nun kendi chart JSON'u newest bar
+  için `close=null, adjclose=null`** (raw'da da; O/H/L ve ara volume 13.93M var); 00:40 UTC
+  (20:40 ET) settled, volume 14.34M, low 88.5→88.42 düzeltilmiş. Tek satır (live-separate yok),
+  `end` tetikleyici değil (23:55'te end=10-14 settled). → Yahoo after-hours bitince (20:00 ET)
+  bar'ı consolidated tape'ten yeniden kuruyor; ~20-40 dk close'suz. Aynı yanıtta
+  `meta.regularMarketPrice`=89.79 @ 16:00:02 ET duruyor. Gece: V 00:02, XOM 00:14, UNH 00:25 UTC
+  council → hepsi pencerede; cache dosyası UTC tarihli + `curr_date < today` = "historical" →
+  close'suz snapshot bütün gece servis.
+- [x] **Fix branch `fix/ohlcv-settle-newest-close`** (c62b410, push'landı, main'e MERGE EDİLMEDİ — council
+  girdisini değiştirir): vendor `stockstats_utils.session_close_bar` (tek ek istek, sadece close'suz
+  newest bar'da: raw O/H/L + metadata close; şart: damga bar'ın kendi tarihinde ≥16:00 ET ve
+  fiyat bar'ın High/Low'u içinde, yoksa eski fallback), `load_ohlcv` + `get_YFin_data_online`
+  (analistin fiyat tablosu) ikisi de kullanıyor; close'suz cache TTL (900 sn) sonra yeniden çekiliyor.
+  14 test (probe'un gerçek KO rakamları), patch'siz 3 davranış testi kırmızı; suite 2346 pass / 2 fail = laptop Alpaca key 401; upstream 30 vendor
+  OHLCV testi yeşil. Canlı yfinance 1.7.0 metadata şekli (tz-aware NY `Timestamp`) doğrulandı.
+- **Karar Canberk'te (3 seçenek):** (1) branch'i merge → prod pull; (2) operasyonel:
+  `COUNCIL_PARALLELISM=2` (merged, kapalı) council'ları ~19:35 ET'de bitirir; (3) bekle: 11-01'de
+  DST bitince pencere 01:00 UTC'ye kayar, bugünkü koşu 00:37 UTC'de bitiyor → kendiliğinden
+  kaybolur (Mart'ta geri gelir, koşu uzarsa da).
+- **Sıradaki:** (a) yarın 10-12 bar'ı Alpaca history'ye geldi mi; (b) alarm hedefi hâlâ boş
+  (#91 `unheard`, `/readyz` alerting hepsi false) = Canberk; (c) StockTwits kararı = Canberk;
+  (d) eval-safe: `api/routes/prices.py` + `backtest/survivor_prices.py` `fromtimestamp` exchange TZ.
+
 ## Daily loop 2026-10-12 (prod-fusapp01 @17ea8f4 → e51894c; gece yarısından sonraki council'lar bir gün eski close okuyor)
 - **Canlı durum** (box localhost, Pazartesi seans öncesi): eval 1M **GO** 23/10 gün, Sharpe 2.93,
   Sortino 5.68, MaxDD −1.52%, +3.15% vs SPY +2.37% (4 gate de yeşil). 3M GO 66 gün, Sharpe 2.11,

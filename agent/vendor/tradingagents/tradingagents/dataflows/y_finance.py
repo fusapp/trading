@@ -10,8 +10,10 @@ from .date_window import withhold_live_profile
 from .stockstats_utils import (
     StockstatsUtils,
     _assert_ohlcv_not_stale,
+    _local_midnight,
     filter_financials_by_date,
     load_ohlcv,
+    session_close_bar,
     yf_retry,
 )
 from .symbol_utils import NoMarketDataError, normalize_symbol
@@ -45,6 +47,15 @@ def get_YFin_data_online(
         raise NoMarketDataError(
             symbol, canonical, f"no rows between {start_date} and {end_date}"
         )
+
+    # Fork patch (trading): inside Yahoo's 20:00 ET rebuild the newest bar
+    # arrives with a volume and no prices; give it the session's close rather
+    # than show the analyst a blank row for the day being traded.
+    if pd.isna(data["Close"].iloc[-1]):
+        bar = session_close_bar(ticker, _local_midnight(data.index[-1]))
+        if bar is not None:
+            data = data.copy()
+            data.loc[data.index[-1], ["Open", "High", "Low", "Close"]] = bar
 
     # Remove timezone info from index for cleaner output
     if data.index.tz is not None:

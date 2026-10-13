@@ -25,6 +25,14 @@ MAX_OHLCV_STALE_DAYS = 10
 # at all (weekend, holiday) cannot trigger a download on every call.
 OHLCV_CACHE_TTL_SECONDS = 900
 
+# Fork patch (trading): Yahoo rebuilds the day's bar from the consolidated tape
+# once after-hours trading ends at 20:00 New York time, and for a while serves
+# it with Open/High/Low and volume but no Close and no Adj Close — null at
+# 20:02-20:25 ET, settled again by 20:40 ET (probed 2026-10-12, both raw and
+# adjusted; the `end` argument plays no part). The same chart response still
+# reports the session's close as regularMarketPrice, stamped after the bell.
+SESSION_CLOSE_HOUR = 16
+
 
 def yf_retry(func, max_retries=3, base_delay=2.0):
     """Execute a yfinance call with exponential backoff on rate limits.
@@ -181,6 +189,74 @@ def _needs_same_day_refresh(data_file, curr_date_dt, today_date) -> bool:
     return time.time() - os.path.getmtime(data_file) > OHLCV_CACHE_TTL_SECONDS
 
 
+def _unsettled_cache_expired(cached: pd.DataFrame, data_file) -> bool:
+    """Whether a cache whose newest bar has no close is due for a refetch.
+
+    Fork patch (trading). "Historical rows are immutable" does not hold for a
+    bar Yahoo has not finished rebuilding: the cache file is keyed by the UTC
+    date, so the first fetch after 00:00 UTC lands in Yahoo's 20:00 ET rebuild
+    window, and every later read that night is a "historical" request that
+    would otherwise reuse that closeless snapshot until the file rolls over.
+    """
+    close = pd.to_numeric(cached["Close"], errors="coerce")
+    if close.empty or not pd.isna(close.iloc[-1]):
+        return False
+    return time.time() - os.path.getmtime(data_file) > OHLCV_CACHE_TTL_SECONDS
+
+
+def session_close_bar(ticker, bar_date: pd.Timestamp) -> list[float] | None:
+    """[Open, High, Low, Close] for a closeless bar on ``bar_date``, or None.
+
+    Fork patch (trading). One extra request, made only for a closeless newest
+    bar: the raw bar (its Open/High/Low survive the rebuild; for the newest bar
+    raw and adjusted prices are the same) and the chart metadata of the same
+    response. Returned only when the metadata's close is stamped on that bar's
+    own date at or after the 16:00 bell and lies inside the bar's High/Low;
+    None otherwise, so the caller's existing handling still governs whatever
+    is uncertain (a half-day's 13:00 close included).
+    """
+    try:
+        raw = yf_retry(lambda: ticker.history(
+            period="5d", interval="1d", auto_adjust=False
+        ))
+        meta = ticker.history_metadata or {}
+    except Exception as e:  # noqa: BLE001 — an unfillable bar keeps the fallback
+        logger.warning("%s: could not read the session close: %r", ticker, e)
+        return None
+
+    price = pd.to_numeric(meta.get("regularMarketPrice"), errors="coerce")
+    stamped = meta.get("regularMarketTime")
+    if raw is None or raw.empty or pd.isna(price) or not isinstance(stamped, pd.Timestamp):
+        return None
+    newest = raw.iloc[-1]
+    open_, high, low = (pd.to_numeric(newest.get(c), errors="coerce") for c in ("Open", "High", "Low"))
+    if (
+        _local_midnight(raw.index[-1]) != bar_date
+        or _local_midnight(stamped) != bar_date
+        or stamped.hour < SESSION_CLOSE_HOUR
+        or pd.isna(open_) or pd.isna(high) or pd.isna(low)
+        or not low <= price <= high
+    ):
+        return None
+    logger.warning(
+        "%s: newest bar %s had no closing price; using the session close %.4f "
+        "Yahoo stamped %s.", ticker, bar_date.date(), price, stamped.isoformat(),
+    )
+    return [float(open_), float(high), float(low), float(price)]
+
+
+def _settle_newest_close(data: pd.DataFrame, canonical: str) -> pd.DataFrame:
+    """``data`` with a closeless newest bar settled by ``session_close_bar``."""
+    if data.empty or not pd.isna(data["Close"].iloc[-1]):
+        return data
+    bar = session_close_bar(yf.Ticker(canonical), _local_midnight(data["Date"].iloc[-1]))
+    if bar is None:
+        return data
+    data = data.copy()
+    data.loc[data.index[-1], ["Open", "High", "Low", "Close"]] = bar
+    return data
+
+
 def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
     """Fetch OHLCV data with caching, filtered to prevent look-ahead bias.
 
@@ -224,6 +300,7 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
             not cached.empty
             and "Close" in cached.columns
             and not _needs_same_day_refresh(data_file, curr_date_dt, today_date)
+            and not _unsettled_cache_expired(cached, data_file)
         ):
             data = cached
 
@@ -242,6 +319,7 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
             raise NoMarketDataError(
                 symbol, canonical, "Yahoo Finance returned no rows"
             )
+        downloaded = _settle_newest_close(downloaded, canonical)
         downloaded.to_csv(data_file, index=False, encoding="utf-8")
         data = downloaded
 

@@ -58,6 +58,7 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from tradingagents_us.backtest.exit_paths import Bar
 from tradingagents_us.log_redaction import scrub_exception
@@ -73,6 +74,11 @@ _CLASS_SHARE_HYPHEN = re.compile(r"^([A-Z]+)-([A-Z]{1,2})$")
 #: an identity. Both collapse to this, and it never compares equal to itself:
 #: two unknowns are not evidence of the same issuer.
 UNKNOWN_CIK = None
+
+#: Polygon stamps a daily bar at midnight New York of its session. Read on the
+#: host's own clock, anywhere west of New York that instant is still the
+#: previous calendar day and every bar lands one session early.
+_EXCHANGE_TZ = ZoneInfo("America/New_York")
 
 
 class ProviderWindowError(RuntimeError):
@@ -451,7 +457,7 @@ def read_bars(
         )
     bars = [
         Bar(
-            day=datetime.fromtimestamp(row["t"] / 1000.0).date(),
+            day=datetime.fromtimestamp(row["t"] / 1000.0, _EXCHANGE_TZ).date(),
             open=float(row["o"]),
             high=float(row["h"]),
             low=float(row["l"]),

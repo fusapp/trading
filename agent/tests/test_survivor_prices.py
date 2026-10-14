@@ -592,3 +592,52 @@ def test_bar_rejects_an_inverted_high_low():
     """The upstream invariant this module's Bars must keep satisfying."""
     with pytest.raises(ValueError, match="below low"):
         Bar(day=date(2021, 9, 8), open=10.0, high=9.0, low=11.0, close=10.0)
+
+
+# --------------------------------------------------------------------------
+# read_bars — session day, not host day
+# --------------------------------------------------------------------------
+
+# Polygon stamps a daily bar at midnight America/New_York of its session.
+_NY_MIDNIGHT_EDT_MS = 1_791_864_000_000  # 2026-10-13 00:00 EDT (04:00 UTC)
+_NY_MIDNIGHT_EST_MS = 1_768_453_200_000  # 2026-01-15 00:00 EST (05:00 UTC)
+
+
+class _AggsResponse:
+    status_code = 200
+
+    def raise_for_status(self) -> None:
+        pass
+
+    def json(self) -> dict:
+        return {
+            "status": "OK",
+            "results": [
+                {"t": _NY_MIDNIGHT_EDT_MS, "o": 101, "h": 103, "l": 100, "c": 102},
+                {"t": _NY_MIDNIGHT_EST_MS, "o": 100, "h": 102, "l": 99, "c": 101},
+            ],
+        }
+
+
+@pytest.mark.parametrize(
+    "zone", ["UTC", "Europe/Istanbul", "America/Chicago", "America/Los_Angeles"]
+)
+def test_read_bars_dates_each_bar_by_its_session_whatever_the_host_clock(
+    monkeypatch: pytest.MonkeyPatch, zone: str
+) -> None:
+    # West of New York a local-clock conversion put every bar on the session
+    # before it, which shifts the whole backtest a day against its signals.
+    import time
+
+    from backtest.survivor_prices import read_bars
+
+    monkeypatch.setattr("httpx.get", lambda *a, **kw: _AggsResponse())
+    monkeypatch.setenv("TZ", zone)
+    time.tzset()
+    try:
+        bars = read_bars("KO", date(2026, 1, 1), date(2026, 10, 31), api_key="test")
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+    assert [b.day for b in bars] == [date(2026, 1, 15), date(2026, 10, 13)]

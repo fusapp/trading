@@ -76,3 +76,52 @@ def test_rejects_bad_ticker(client: TestClient) -> None:
 
 def test_normalizes_lowercase(client: TestClient) -> None:
     assert client.get("/v1/prices/nvda?days=5").json()["ticker"] == "NVDA"
+
+
+# Polygon stamps a daily bar at midnight America/New_York of its session:
+# 04:00 UTC under EDT, 05:00 UTC under EST.
+_NY_MIDNIGHT_EDT_MS = 1_791_864_000_000  # 2026-10-13 00:00 EDT
+_NY_MIDNIGHT_EST_MS = 1_768_453_200_000  # 2026-01-15 00:00 EST
+
+
+class _SessionStampedPolygon(_FakePolygon):
+    def aggregates(self, ticker, from_date, to_date, timespan="day", **kw):  # noqa: ANN001
+        return [
+            _Agg(_NY_MIDNIGHT_EST_MS, 100, 102, 99, 101, 1e6),
+            _Agg(_NY_MIDNIGHT_EDT_MS, 101, 103, 100, 102, 1e6),
+        ]
+
+
+@pytest.fixture()
+def host_tz(monkeypatch: pytest.MonkeyPatch):
+    """Run the code under test as if the host clock were in `zone`."""
+    import time
+
+    def set_zone(zone: str) -> None:
+        monkeypatch.setenv("TZ", zone)
+        time.tzset()
+
+    yield set_zone
+    monkeypatch.undo()
+    time.tzset()
+
+
+@pytest.mark.parametrize(
+    "zone", ["UTC", "Europe/Istanbul", "America/Chicago", "America/Los_Angeles"]
+)
+def test_bar_date_is_the_session_day_whatever_the_host_clock(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, host_tz, zone: str
+) -> None:
+    # West of New York, the host's own midnight comes after Polygon's stamp, so
+    # a local-clock conversion labelled every bar with the session before it.
+    monkeypatch.setattr("api.routes.prices.PolygonClient", _SessionStampedPolygon)
+
+    def no_cache():  # noqa: ANN202 — force the Polygon path, skip the sqlite file
+        raise RuntimeError("cache offline in this test")
+
+    monkeypatch.setattr("api.routes.prices.get_repo", no_cache)
+    host_tz(zone)
+
+    body = client.get("/v1/prices/KO?days=5").json()
+
+    assert [b["t"] for b in body["bars"]] == ["2026-01-15", "2026-10-13"]

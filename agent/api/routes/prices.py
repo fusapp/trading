@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from threading import Lock
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -27,6 +28,11 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 _CACHE_TTL_S = 300.0
+
+# Polygon stamps a daily bar at midnight New York of its session. Read on the
+# host's own clock, anywhere west of New York that instant falls on the
+# previous calendar day and every bar is labelled one session early.
+_EXCHANGE_TZ = ZoneInfo("America/New_York")
 _cache: dict[str, tuple[float, PriceSeries]] = {}
 _lock = Lock()
 
@@ -121,7 +127,7 @@ def _load(ticker: str, days: int) -> PriceSeries:
         aggs = pc.aggregates(ticker, from_d, to_d, timespan="day")
     bars = [
         Bar(
-            t=date.fromtimestamp(a.timestamp_ms / 1000).isoformat(),
+            t=datetime.fromtimestamp(a.timestamp_ms / 1000, _EXCHANGE_TZ).date().isoformat(),
             o=a.open,
             h=a.high,
             l=a.low,

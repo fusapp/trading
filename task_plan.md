@@ -1335,6 +1335,38 @@ Eval is CLOSED: decision-path changes now allowed on main, but each HIGH-blast i
   çoklu stop'ta en yüksek; order book hatası snapshot'ı düşürmez. 6 yeni test, suite 1833 pass /
   2 fail = laptop ölü Alpaca key (401). Box'a DEPLOY EDİLMEDİ (prod pull #52 kararına bağlı).
 
+## Daily loop 2026-10-14 (prod-fusapp01 @7d3b7bd → addd35d; inert dönem bitti, ilk BUY close'suz bar'la)
+- **Canlı durum** (box localhost, Çarşamba seans öncesi 06:07 UTC): eval 1M **GO** 21/10 gün,
+  Sharpe 2.50, Sortino 4.77, MaxDD −1.52%, Calmar 24.51, +2.55% vs SPY +2.51% → `beats_spy` PASS
+  (0.04pt — kıl payı). 3M GO 65 gün, Sharpe 2.04, MaxDD −4.25%, +7.65% vs SPY +4.11%.
+  Equity $113,747.78, cash $44,814.66, 6 pozisyon (hepsi stop'lu, UNH −8.0%), daily +$671.12.
+- **Alpaca paper bir seans geride roll ediyor:** 10-12 bar'ı geldi (gün 20→21, `last_equity`
+  $113,076.66 = 10-12 kapanışı), 10-13 HENÜZ YOK (history 10-12'de bitiyor; snapshot equity 10-13
+  MTM). Columbus Day'den beri roll bir gün geç → eval son seansı görmüyor. Yarın: 2 bar mı geldi
+  (yetişti) yoksa hâlâ 1 geride mi.
+- **10-13 gece koşusu:** exit 0, 22:31→00:39 UTC, 11 council ≈ $24.56, 0/190 naked, inert verdict
+  `active` (2/223 submit). **İnert dönem bitti — 2 MARKET BUY ACCEPTED (bugün açılışta dolar):**
+  GOOGL 32 @~$352.72 (stop 339.5, 9.8%) ve XOM 68 @~$174.08 (stop 161.0, 9.97%). Dolarsa 8
+  pozisyon, cash ≈ $22k. İkisi de yeniden giriş: GOOGL 10-06 time-exit @345.46, XOM 10-09 TP
+  @170.02 → churn (≈ +2% üstten geri alım). Strateji gözlemi, karar yoluna dokunulmadı.
+- **20:00 ET boşluğu artık bir EMRE dokundu:** XOM council'ı 00:16 UTC'de koştu, cache
+  `XOM-YFin-data-…-2026-10-15.csv` son satırı `2026-10-13,,,,,11507637` (V, UNH aynı) → XOM BUY
+  kararı indikatörleri 10-12 bar'ıyla verildi (10-12 c=172.15 vs 10-13 c=174.08). Nedensellik
+  iddiası değil ama `fix/ohlcv-settle-newest-close` merge kararının (Canberk) somut kanıtı.
+- [x] **addd35d (prod):** `/v1/prices` + `backtest/survivor_prices.read_bars` Polygon daily
+  damgasını (NY gece yarısı) host lokal saatine göre tarihliyordu → NY'nin batısında (Chicago,
+  LA) her bar bir seans erken. `/v1/prices` paylaşılan `price_cache`'i YAZIYOR ve
+  `risk/market_inputs` + `manage_positions` onu OKUYOR → sadece grafik değil. İkisi de artık
+  `_EXCHANGE_TZ` (manage_positions zaten öyleydi). TZ parametreli 8 test (patch'siz Chicago/LA
+  kırmızı). Box Etc/UTC → çıktı birebir aynı, eval-safe. Suite 2340 pass / 2 fail = laptop Alpaca
+  key 401 (doğrulandı). Deploy: pull + api restart, `/readyz` OK, `/v1/prices/XOM` 10-13 doğru.
+- Kalan `fromtimestamp` lokal-saat sitesi: `dataflows/reddit_client.py:66` (`created_utc` naive
+  local) — sentiment girdisi = karar yolu, box UTC'de doğru → dokunulmadı (branch işi).
+- **Sıradaki:** (a) Alpaca roll yetişti mi + GOOGL/XOM dolum fiyatları ve stop bacakları
+  (naked sayacı); (b) `fix/ohlcv-settle-newest-close` merge / `COUNCIL_PARALLELISM=2` / DST bekle
+  kararı = Canberk; (c) alarm hedefi boş (`/readyz` alerting hepsi false, #91) = Canberk;
+  (d) StockTwits kararı = Canberk.
+
 ## Daily loop 2026-10-13 (prod-fusapp01 @7d3b7bd, deploy YOK; 20:00 ET close boşluğu bulundu, fix branch'te)
 - **Canlı durum** (box localhost, Salı seans öncesi): eval 1M **GO** 20/10 gün, Sharpe 2.13,
   Sortino 4.06, MaxDD −1.52%, Calmar 21.33, +2.14% vs SPY **+2.57%** → `beats_spy` FAIL (görev

@@ -24,9 +24,11 @@ def _repo(tmp_path) -> TradeLogRepository:
     return TradeLogRepository(engine=create_engine(f"sqlite:///{tmp_path}/t.db", future=True))
 
 
-def _seed(repo: TradeLogRepository, ticker: str, closes: list[float]) -> None:
-    """Consecutive daily bars ending today, one per close."""
-    start = date.today() - timedelta(days=len(closes) - 1)
+def _seed(
+    repo: TradeLogRepository, ticker: str, closes: list[float], *, end: date | None = None
+) -> None:
+    """Consecutive daily bars ending `end` (today by default), one per close."""
+    start = (end or date.today()) - timedelta(days=len(closes) - 1)
     bars = [
         {
             "t": (start + timedelta(days=i)).isoformat(),
@@ -138,3 +140,93 @@ class TestRecentLossStreak:
         repo = _repo(tmp_path)
         _seed_trades(repo, [-1.0] * 6)
         assert recent_loss_streak(repo=repo) == 6
+
+
+class TestGateInputs:
+    """The BUY gates read a cache only the prices route writes. When it went
+    stale (2026-10-14: nine of eleven names with nothing newer than 09-11) every
+    BUY was sized with the anomaly check skipped and the correlation cap at 0,
+    and the only trace was an INFO line per ticker. `gate_inputs` is what
+    preflight reports from, so it must agree with the gates, not approximate them.
+    """
+
+    @pytest.mark.parametrize("n", [0, 1, 4, 9, 10, 11, 20, 21, 40, 120])
+    def test_agrees_with_the_gates_it_reports_on(self, tmp_path, n: int) -> None:
+        from tradingagents_us.risk.market_inputs import (
+            average_dollar_volume,
+            count_correlated,
+            gate_inputs,
+            rolling_price_stats,
+        )
+
+        repo = _repo(tmp_path)
+        # MSFT moves exactly with AAPL, so the cap counts it whenever AAPL's own
+        # series is long enough to be measured at all.
+        closes = [100.0 + (i % 3) for i in range(n)]
+        _seed(repo, "AAPL", closes)
+        _seed(repo, "MSFT", [2 * c for c in closes])
+
+        got = gate_inputs("AAPL", repo=repo)
+        assert got.anomaly_skipped == (rolling_price_stats("AAPL", repo=repo) is None)
+        assert got.correlation_unmeasured == (
+            count_correlated("AAPL", ["MSFT"], repo=repo) == 0
+        )
+        assert (got.adv_bars == 0) == (average_dollar_volume("AAPL", repo=repo) is None)
+
+    def test_a_stale_cache_is_short_even_with_a_long_history(self, tmp_path) -> None:
+        from tradingagents_us.risk.market_inputs import gate_inputs
+
+        repo = _repo(tmp_path)
+        end = date.today() - timedelta(days=33)
+        # Sixty bars, all older than a month: the 20-day gates' lookback reaches
+        # back 37 days, so it only sees the newest few of them.
+        _seed(repo, "AAPL", [100.0] * 60, end=end)
+        got = gate_inputs("AAPL", repo=repo)
+        assert got.anomaly_skipped and got.adv_short
+        assert got.anomaly_closes == 5
+        assert got.newest_bar == end.isoformat()
+
+    def test_nothing_cached(self, tmp_path) -> None:
+        from tradingagents_us.risk.market_inputs import gate_inputs
+
+        got = gate_inputs("aapl", repo=_repo(tmp_path))
+        assert got.ticker == "AAPL"
+        assert (got.anomaly_closes, got.correlation_returns, got.adv_bars) == (0, 0, 0)
+        assert got.newest_bar is None
+
+
+class TestDescribeShortGates:
+    def _row(self, ticker: str, closes: int, returns: int, adv: int, newest: str | None):
+        from tradingagents_us.risk.market_inputs import GateInputs
+
+        return GateInputs(ticker, closes, returns, adv, newest)
+
+    def test_silent_when_every_gate_has_its_bars(self) -> None:
+        from tradingagents_us.risk.market_inputs import describe_short_gates
+
+        rows = [self._row("AAPL", 20, 80, 20, "2026-10-14")]
+        assert describe_short_gates(rows) is None
+        assert describe_short_gates([]) is None
+
+    def test_names_each_short_gate_with_the_best_count_and_the_stalest_date(self) -> None:
+        from tradingagents_us.risk.market_inputs import describe_short_gates
+
+        rows = [
+            self._row("AAPL", 4, 3, 4, "2026-09-11"),
+            self._row("MSFT", 2, 1, 2, "2026-09-09"),
+            self._row("XOM", 20, 30, 20, "2026-10-13"),
+        ]
+        msg = describe_short_gates(rows)
+        assert msg is not None
+        assert "price-anomaly check skipped for 2/3 (at most 4 of 10 closes)" in msg
+        assert "correlation cap reads 0 for 2/3 (at most 3 of 20 returns)" in msg
+        assert "ADV averaged over at most 4 of 20 bars for 2/3" in msg
+        # XOM is healthy, so its fresh bar must not hide the stale ones.
+        assert "stalest newest bar 2026-09-09" in msg
+
+    def test_a_name_with_no_bars_at_all_is_called_out(self) -> None:
+        from tradingagents_us.risk.market_inputs import describe_short_gates
+
+        rows = [self._row("AAPL", 4, 3, 4, "2026-09-11"), self._row("NEW", 0, 0, 0, None)]
+        msg = describe_short_gates(rows)
+        assert msg is not None and "stalest newest bar none cached" in msg

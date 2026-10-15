@@ -55,6 +55,7 @@ def other_checks_pass(monkeypatch: pytest.MonkeyPatch, state_file: Path) -> None
         monkeypatch.setattr(preflight, name, lambda failures: None)
     monkeypatch.setattr(preflight, "_check_fred", lambda: None)
     monkeypatch.setattr(preflight, "_check_stocktwits", lambda: "ok")
+    monkeypatch.setattr(preflight, "_check_buy_gate_inputs", lambda failures: "ok")
 
 
 def _anthropic_refused(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -365,3 +366,79 @@ class TestStocktwitsIsReportedNotFailed:
         )
         assert preflight.main() == 0
         assert fake_github.opened == []
+
+
+_REAL_BUY_GATE_CHECK = preflight._check_buy_gate_inputs
+
+
+class TestBuyGateInputsAreReportedNotFailed:
+    """The BUY gates' bars come from a cache only the app's charts fill. Short
+    bars skip the anomaly check and zero the correlation cap; preflight says so
+    the evening before, and never fails over it."""
+
+    @pytest.fixture
+    def db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+        url = f"sqlite:///{tmp_path / 'gates.db'}"
+        monkeypatch.setenv("DATABASE_URL", url)
+        monkeypatch.setenv("UNIVERSE", "AAPL XOM")
+        return url
+
+    def _seed(self, url: str, ticker: str, days: int, end_ago: int) -> None:
+        from sqlalchemy import create_engine
+
+        from tradingagents_us.storage import TradeLogRepository
+        from tradingagents_us.storage.price_cache import write_bars
+
+        repo = TradeLogRepository(engine=create_engine(url, future=True))
+        end = datetime.now(UTC).date() - timedelta(days=end_ago)
+        bars = [
+            {"t": (end - timedelta(days=i)).isoformat(), "o": 1.0, "h": 1.0, "l": 1.0,
+             "c": 100.0 + i % 2, "v": 1e6}
+            for i in range(days)
+        ]
+        with repo.session() as s:
+            write_bars(s, ticker, bars)
+
+    def test_a_stale_cache_is_named(self, db: str) -> None:
+        self._seed(db, "AAPL", 60, end_ago=33)
+        self._seed(db, "XOM", 120, end_ago=0)
+        msg = preflight._check_buy_gate_inputs([])
+        assert msg.startswith("BUY gates short of cached bars: ")
+        assert "price-anomaly check skipped for 1/2" in msg
+        assert msg.endswith("(soft)")
+
+    def test_a_fresh_cache_is_ok(self, db: str) -> None:
+        self._seed(db, "AAPL", 120, end_ago=0)
+        self._seed(db, "XOM", 120, end_ago=0)
+        assert preflight._check_buy_gate_inputs([]) == "ok"
+
+    def test_a_failed_db_check_is_not_papered_over(
+        self, tmp_path: Path, db: str
+    ) -> None:
+        # Opening the repository would create the file the db check found missing.
+        msg = preflight._check_buy_gate_inputs([("db", "local.db does not exist")])
+        assert msg == "skipped: db check failed"
+        assert not (tmp_path / "gates.db").exists()
+
+    def test_unreadable_is_soft(self, db: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        from tradingagents_us.risk import market_inputs
+
+        def boom(*a, **k):
+            raise RuntimeError("disk I/O error")
+
+        monkeypatch.setattr(market_inputs, "gate_inputs", boom)
+        msg = preflight._check_buy_gate_inputs([])
+        assert msg == "BUY-gate inputs could not be read: disk I/O error (soft)"
+
+    def test_short_bars_never_fail_preflight(
+        self, other_checks_pass: None, fake_github: FakeGitHub, db: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("HEALTHCHECK_URL", HC)
+        monkeypatch.setattr(preflight, "_check_buy_gate_inputs", _REAL_BUY_GATE_CHECK)
+        assert preflight.main() == 0
+        assert fake_github.opened == []
+
+    def test_default_universe_is_daily_runs(self) -> None:
+        sh = (Path(preflight.__file__).parent / "daily_run.sh").read_text()
+        assert f'UNIVERSE="${{UNIVERSE:-{preflight.DEFAULT_UNIVERSE}}}"' in sh

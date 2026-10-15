@@ -15,6 +15,7 @@ quiet in the first place; the caller decides what an unknown should mean.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import date, timedelta
 
 from ..storage import price_cache
@@ -131,6 +132,11 @@ _ANOMALY_WINDOW_DAYS = 20
 _MIN_ANOMALY_BARS = 10
 
 
+def _anomaly_closes(repo: TradeLogRepository, ticker: str, window_days: int) -> list[float]:
+    rows = _bars(repo, ticker, window_days)
+    return [r.close for r in rows[-window_days:] if r.close and r.close > 0]
+
+
 def rolling_price_stats(
     ticker: str,
     *,
@@ -151,8 +157,7 @@ def rolling_price_stats(
     check at all while looking like one.
     """
     repo = repo or TradeLogRepository()
-    rows = _bars(repo, ticker, window_days)
-    closes = [r.close for r in rows[-window_days:] if r.close and r.close > 0]
+    closes = _anomaly_closes(repo, ticker, window_days)
     if len(closes) < _MIN_ANOMALY_BARS:
         log.info(
             "rolling_price_stats(%s): %d closes, need %d",
@@ -194,3 +199,94 @@ def recent_loss_streak(
             break
         streak += 1
     return streak
+
+
+@dataclass(frozen=True)
+class GateInputs:
+    """How much history each BUY gate above will find in the cache for one name.
+
+    Counted with the gates' own windows and reads, so this cannot say a gate
+    has its bars while the gate itself finds too few.
+    """
+
+    ticker: str
+    anomaly_closes: int
+    correlation_returns: int
+    adv_bars: int
+    newest_bar: str | None
+
+    @property
+    def anomaly_skipped(self) -> bool:
+        return self.anomaly_closes < _MIN_ANOMALY_BARS
+
+    @property
+    def correlation_unmeasured(self) -> bool:
+        return self.correlation_returns < _MIN_OVERLAP
+
+    @property
+    def adv_short(self) -> bool:
+        return self.adv_bars < _ADV_WINDOW_DAYS
+
+
+def gate_inputs(ticker: str, *, repo: TradeLogRepository | None = None) -> GateInputs:
+    """What `rolling_price_stats`, `count_correlated` and `average_dollar_volume`
+    will see for `ticker` if it is sized now. Reads the cache only."""
+    repo = repo or TradeLogRepository()
+    quarter = _bars(repo, ticker, _CORR_WINDOW_DAYS)
+    return GateInputs(
+        ticker=ticker.upper(),
+        anomaly_closes=len(_anomaly_closes(repo, ticker, _ANOMALY_WINDOW_DAYS)),
+        correlation_returns=len(_returns(quarter)),
+        adv_bars=len(_bars(repo, ticker, _ADV_WINDOW_DAYS)[-_ADV_WINDOW_DAYS:]),
+        newest_bar=quarter[-1].bar_date if quarter else None,
+    )
+
+
+def describe_short_gates(rows: list[GateInputs]) -> str | None:
+    """One line naming each gate that will run short of bars, or None.
+
+    The cache these gates read is written only by the prices route, when
+    someone opens a chart; nothing in the daily run fills it. On 2026-10-14
+    nine of the eleven names had no bar newer than 09-11, so their BUYs were
+    sized with the anomaly check skipped and the correlation cap reading zero,
+    and each said so only in an INFO line per ticker. The count is the most any
+    short name had, so "at most 4 of 10" means none came close; the date is the
+    stalest of their newest bars.
+    """
+    if not rows:
+        return None
+    n = len(rows)
+    parts: list[str] = []
+    short_any = [
+        r for r in rows if r.anomaly_skipped or r.correlation_unmeasured or r.adv_short
+    ]
+    skipped = [r for r in rows if r.anomaly_skipped]
+    if skipped:
+        most = max(r.anomaly_closes for r in skipped)
+        parts.append(
+            f"price-anomaly check skipped for {len(skipped)}/{n} "
+            f"(at most {most} of {_MIN_ANOMALY_BARS} closes)"
+        )
+    unmeasured = [r for r in rows if r.correlation_unmeasured]
+    if unmeasured:
+        most = max(r.correlation_returns for r in unmeasured)
+        parts.append(
+            f"correlation cap reads 0 for {len(unmeasured)}/{n} "
+            f"(at most {most} of {_MIN_OVERLAP} returns)"
+        )
+    short = [r for r in rows if r.adv_short]
+    if short:
+        most = max(r.adv_bars for r in short)
+        parts.append(
+            f"ADV averaged over at most {most} of {_ADV_WINDOW_DAYS} bars "
+            f"for {len(short)}/{n}"
+        )
+    if not parts:
+        return None
+    newest = [r.newest_bar for r in short_any]
+    stalest = "none cached" if None in newest else min(d for d in newest if d)
+    return (
+        "BUY gates short of cached bars: " + "; ".join(parts)
+        + f"; stalest newest bar {stalest}"
+        + " — the bar cache is filled only when the app opens a chart"
+    )

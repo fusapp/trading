@@ -10,8 +10,8 @@ sends an ops alert (push AND a GitHub issue, see notifications.ops_channel)
 and exits 1 (visible in systemctl status); on success it exits 0 quietly.
 
 Hard checks: Alpaca (account + paper URL), Anthropic key, Polygon, Finnhub,
-OpenRouter (only when LLM_COUNCIL=1), DB writable, disk. FRED and StockTwits
-are warn-only.
+OpenRouter (only when LLM_COUNCIL=1), DB writable, disk. FRED, StockTwits and
+the BUY gates' cached bars are warn-only.
 
 Alerting gaps (no HEALTHCHECK_URL; no GitHub alert token, or one GitHub
 refuses or that expires within days) are reported separately and do NOT set
@@ -202,6 +202,42 @@ def _check_stocktwits() -> str:
     return msg
 
 
+#: daily_run.sh's own default, for a box whose env does not set UNIVERSE.
+DEFAULT_UNIVERSE = "SPY AAPL MSFT NVDA GOOGL AMZN META JPM V XOM UNH"
+
+
+def _check_buy_gate_inputs(failures: list[Failure]) -> str:
+    """Warn-only — say when tonight's BUY gates will run without the bars they need.
+
+    trade.py's price-anomaly check, correlation cap and liquidity floor read
+    the bar cache, which only the prices route writes, when someone opens a
+    chart. A cache that went stale skips the anomaly check and zeroes the
+    correlation count on every BUY, and the only trace was an INFO line per
+    ticker. Reads the cache with the gates' own windows; never fills it,
+    because filling it would change what those gates decide.
+
+    Skipped when the DB check failed: opening the repository creates tables,
+    and a missing or mistyped DB must stay missing for that check to report.
+    """
+    if any(name == "db" for name, _ in failures):
+        return "skipped: db check failed"
+    universe = os.environ.get("UNIVERSE", "").split() or DEFAULT_UNIVERSE.split()
+    try:
+        from tradingagents_us.risk.market_inputs import describe_short_gates, gate_inputs
+        from tradingagents_us.storage.repository import TradeLogRepository
+
+        repo = TradeLogRepository()
+        rows = [gate_inputs(t, repo=repo) for t in dict.fromkeys(t.upper() for t in universe)]
+        msg = describe_short_gates(rows)
+    except Exception as exc:  # noqa: BLE001 — a report, never a failure
+        msg = f"BUY-gate inputs could not be read: {exc}"
+    if msg is None:
+        return "ok"
+    msg = f"{msg} (soft)"
+    print(f"preflight: {msg}", file=sys.stderr)
+    return msg
+
+
 def _check_db(failures: list[Failure]) -> None:
     try:
         from sqlalchemy import text
@@ -345,6 +381,7 @@ def main() -> int:
     _check_stocktwits()
     _check_db(failures)
     _check_disk(failures)
+    _check_buy_gate_inputs(failures)
 
     _record(failures, gaps)
     if gaps:

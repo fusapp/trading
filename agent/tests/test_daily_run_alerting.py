@@ -344,6 +344,7 @@ def test_pause_new_skips_the_decisions_and_still_manages_what_is_held(tmp_path: 
     modules = run.modules()
     assert "scripts.trade" not in modules
     assert "scripts.commentator_fetch" not in modules
+    assert "scripts.warm_bar_cache" not in modules, "no BUY gate runs to fetch bars for"
     assert "scripts.inert_alert" not in modules, "a paused book is inert on purpose"
     (call,) = [c for c in run.calls if c[0] == "scripts.manage_positions"]
     assert {"--backfill-stops", "--refresh-bars"} <= set(call[1:])
@@ -498,3 +499,32 @@ def test_the_onfailure_unit_raises_a_page_notify_ops_accepts(fake_github: FakeGi
 
     issue = _deliver(argv, fake_github)
     assert "<!-- box-alert-kind:unit_failed -->" in str(issue["body"])
+
+
+# --- bars for the BUY gates -------------------------------------------------------
+#
+# The anomaly check, correlation cap and liquidity floor read a bar cache only
+# the app's charts filled. The run fetches the decided names' bars once, after
+# the position pass and before any council, and a failed fetch leaves the run
+# deciding on the cache as it was.
+
+
+def test_bars_are_fetched_for_the_decided_names_before_any_council(tmp_path: Path) -> None:
+    run = run_daily(tmp_path, UNIVERSE="AAPL MSFT")
+
+    assert run.rc == 0, run.output
+    modules = run.modules()
+    (call,) = [c for c in run.calls if c[0] == "scripts.warm_bar_cache"]
+    assert call[1:] == ["AAPL", "MSFT"]
+    warm = modules.index("scripts.warm_bar_cache")
+    assert modules.index("scripts.manage_positions") < warm
+    assert warm < min(i for i, m in enumerate(modules) if m == "scripts.trade")
+
+
+def test_a_failed_bar_fetch_never_stops_the_decisions(tmp_path: Path) -> None:
+    run = run_daily(tmp_path, UNIVERSE="AAPL", FAKE_RC_scripts_warm_bar_cache="1")
+
+    assert run.rc == 0, run.output
+    assert "scripts.trade" in run.modules()
+    assert "bar cache warm failed (non-fatal)" in run.output
+    assert run.alerts("position_pass") == []

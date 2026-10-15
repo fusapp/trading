@@ -34,8 +34,20 @@ _CORR_THRESHOLD = 0.7
 _MIN_OVERLAP = 20
 
 
+def _lookback_start(days: int, today: date | None = None) -> date:
+    # Calendar padding so weekends and holidays still leave ~`days` sessions.
+    return (today or date.today()) - timedelta(days=int(days * 1.6) + 5)
+
+
+def gate_lookback_start(today: date | None = None) -> date:
+    """The oldest bar date any BUY gate here reads: what a cache fill must cover."""
+    return _lookback_start(
+        max(_ADV_WINDOW_DAYS, _CORR_WINDOW_DAYS, _ANOMALY_WINDOW_DAYS), today
+    )
+
+
 def _bars(repo: TradeLogRepository, ticker: str, days: int) -> list:
-    start = date.today() - timedelta(days=int(days * 1.6) + 5)
+    start = _lookback_start(days)
     with repo.session() as s:
         return price_cache.read_bars(s, ticker.upper(), start, date.today())
 

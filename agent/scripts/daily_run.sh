@@ -239,8 +239,8 @@ echo "--- position management ---" | tee -a "$RUN_LOG"
 # app's chart views write the bar cache, and a held name nobody charted kept
 # weeks-old bars: its age stopped counting toward the time exit, and once it
 # moved past the mark band its stop was refused every night. The bars are kept
-# for the pass and not written to the cache, which the BUY checks below read.
-# A name that cannot be refreshed is judged by its cache's age.
+# for the pass and not written to the cache; the BUY gates' bars are fetched
+# separately below. A name that cannot be refreshed is judged by its cache's age.
 #
 # Non-fatal, but never silent. rc 3 means a time exit may have left shares with
 # no stop: a cancel still on its way strips the stop after this run, and the
@@ -271,6 +271,22 @@ if [[ "$PAUSED" -eq 1 ]]; then
   DECIDE=""
   echo "" | tee -a "$RUN_LOG"
   echo "kill switch PAUSE_NEW — decisions skipped" | tee -a "$RUN_LOG"
+fi
+
+# Bars for the BUY gates. The price-anomaly check, correlation cap and liquidity
+# floor read the bar cache, which only the prices route wrote, when someone
+# opened a chart: with the app closed every BUY was sized with the anomaly check
+# skipped. Fetch the decided names' bars once, before any council. Best-effort:
+# a failed fetch leaves the cache as it was, and the gates skip as they did.
+if [[ -n "$DECIDE" ]]; then
+  echo "" | tee -a "$RUN_LOG"
+  echo "--- bar cache for the BUY gates ---" | tee -a "$RUN_LOG"
+  # shellcheck disable=SC2086 # DECIDE is a space-separated ticker list
+  if timeout -k 30 "${WARM_BARS_TIMEOUT_S:-600}" env PYTHONPATH=.:vendor/tradingagents "$PYTHON" -m scripts.warm_bar_cache $DECIDE 2>&1 | tee -a "$RUN_LOG"; then
+    :
+  else
+    echo "  -> bar cache warm failed (non-fatal) — BUY gates read the cache as it was" | tee -a "$RUN_LOG"
+  fi
 fi
 
 # Commentator feed (ADR-009): fetch and extract ONCE, before the tickers, so

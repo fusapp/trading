@@ -358,9 +358,8 @@ def _refresh_bars(tickers: list[str], today: date) -> tuple[dict[str, Series], l
 
     Held in memory for this pass, never written to the cache. trade.py's BUY
     checks read that cache (the correlation cap over the held names, the
-    price-anomaly gate, the liquidity floor), and nothing else in the daily
-    run writes it: filling it here, minutes before the councils run, would
-    change what those checks decide on a BUY.
+    price-anomaly gate, the liquidity floor), and scripts.warm_bar_cache fills
+    it for them, for every decided name, as its own step of the daily run.
 
     Paced at REFRESH_PACE_S, so a ten-name book takes about two minutes.
     Returns the series per name, and the names it could not refresh (or that

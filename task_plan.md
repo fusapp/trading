@@ -1335,6 +1335,37 @@ Eval is CLOSED: decision-path changes now allowed on main, but each HIGH-blast i
   çoklu stop'ta en yüksek; order book hatası snapshot'ı düşürmez. 6 yeni test, suite 1833 pass /
   2 fail = laptop ölü Alpaca key (401). Box'a DEPLOY EDİLMEDİ (prod pull #52 kararına bağlı).
 
+## Daily loop 2026-10-15 (prod-fusapp01 @dba0810 → bce077e; BUY gate'leri bir aydır bayat cache'le koşuyor)
+- **Canlı durum** (box localhost, Perşembe seans öncesi 06:07 UTC): eval 1M **GO** 22/10 gün,
+  Sharpe 2.88, Sortino 5.53, MaxDD −1.52%, Calmar 27.93, +3.0% vs SPY +2.5% → `beats_spy` PASS.
+  Equity $112,086.20, cash $33,730.83, 7 pozisyon (hepsi stop'lu), daily −$1,483.88 (−1.31%).
+- **Alpaca roll:** history son bar 10-13 (gün 21→22), 10-14 yok → 06:07 UTC'de tutarlı şekilde
+  bir seans geride. Bug değil, sistematik gecikme: sabah okunan eval son seansı görmüyor.
+- GOOGL 32 @355.05 + XOM 68 @175.02 10-14 açılışta doldu (stop 339.5 / 163.72), 0/235 naked.
+  10-14 gece koşusu: exit 0, 11/11 Hold, 0 emir, inert verdict `active` (2/225 submit).
+- **Bulgu — BUY gate'leri kör:** `price_cache`'i sadece `/v1/prices` (app grafik açınca) yazıyor;
+  AAPL/MSFT/NVDA/GOOGL/AMZN/META/JPM/V/UNH için son bar **2026-09-11** (fetch 09-13). Gate
+  lookback'i 37 gün → 4 bar → her gece 9/11 isimde price-anomaly check SKIP, ADV 4 Eylül bar'ından,
+  correlation cap Ağustos verisiyle. 10-13 GOOGL/XOM BUY'ları bu durumda boyutlandı (XOM o sabah
+  /v1/prices ile tazelenmişti). Tek iz: ticker başına INFO satırı. 07-04 review #5'in "gate'ler
+  gerçek veriyle" fix'i kodda doğru, prod'da veri yok.
+- [x] **bce077e (prod):** preflight warn-only `_check_buy_gate_inputs` — `market_inputs.gate_inputs`
+  gate'lerin kendi pencere/eşikleriyle sayar (invariant testi: 10 uzunlukta gate'lerle birebir),
+  `describe_short_gates` tek satır. Cache'i OKUR, doldurmaz (karar değişmez); `rolling_price_stats`
+  davranışı birebir. Prod'da gerçek çıktı: `price-anomaly check skipped for 9/11 (at most 4 of 10
+  closes); ADV averaged over at most 13 of 20 bars for 10/11; stalest newest bar 2026-09-11`.
+  API import etmiyor → restart yok. Suite 2361 pass / 2 fail = laptop Alpaca key 401 (doğrulandı).
+- [ ] **Branch `fix/warm-bar-cache-for-buy-gates` (381992e, push, MERGE YOK):** `scripts/warm_bar_cache.py`
+  karar verilecek isimlerin bar'larını en uzun gate lookback'i boyunca (149 gün, isim başına 1
+  Polygon isteği, 12 sn pace ≈ 2.2 dk) çekip cache'e yazar; daily_run'da manage_positions'tan
+  sonra, council'lardan önce; PAUSE_NEW'de koşmaz; hata → cache olduğu gibi, run devam. Box'ta
+  read-only Polygon denemesi: AAPL 103 bar 05-19→10-14 tek istek. Gate'leri CANLANDIRIR (anomaly
+  BUY reddedebilir) → HIGH blast, gözetimli paper run + Canberk kararı. Suite 2369 / 2 (aynı 401).
+- **Sıradaki:** (a) branch merge kararı (Canberk) — merge sonrası ilk gece `--- bar cache for the
+  BUY gates ---` bloğunu ve anomaly ret'lerini izle; (b) 21:45 UTC preflight journal'ında yeni
+  satırı doğrula; (c) önceki açıklar: `fix/ohlcv-settle-newest-close` / `COUNCIL_PARALLELISM=2`,
+  alarm hedefi (#91), StockTwits = Canberk.
+
 ## Daily loop 2026-10-14 (prod-fusapp01 @7d3b7bd → addd35d; inert dönem bitti, ilk BUY close'suz bar'la)
 - **Canlı durum** (box localhost, Çarşamba seans öncesi 06:07 UTC): eval 1M **GO** 21/10 gün,
   Sharpe 2.50, Sortino 4.77, MaxDD −1.52%, Calmar 24.51, +2.55% vs SPY +2.51% → `beats_spy` PASS

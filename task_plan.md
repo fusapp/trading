@@ -92,7 +92,7 @@ Eval is CLOSED: decision-path changes now allowed on main, but each HIGH-blast i
       an explicit `MAX_GROSS_EXPOSURE_PCT`. Decision-path change → tests + supervised run. This is
       why `assert acct.cash >= 0` no longer lives in test_dataflows_smoke.py.
 - Circuit breaker real inputs (5/7 gates placeholder-fed) — first supervised live week, uses last_equity from #9
-- Position detail screen + per-ticker history from snapshot JSONL; kill-switch audit trail + header pill (after #2); LLM cost panel (after pipeline.py tokens_in/out=0 stub fix); TR-primary language sweep; paper lane as permanent staging (templated units + EXPECTED_ALPACA_ACCOUNT interlock); ws.ts is implemented-unused (+ close() reconnect bug) — decide: wire realtime or delete; backup restore drill; secrets → /etc/ai-trader/
+- Position detail screen + per-ticker history from snapshot JSONL; kill-switch audit trail + header pill (after #2); LLM cost panel (after pipeline.py tokens_in/out=0 stub fix); TR-primary language sweep; paper lane as permanent staging (templated units + EXPECTED_ALPACA_ACCOUNT interlock); ws.ts is implemented-unused (+ close() reconnect bug) — decide: wire realtime or delete; ~~backup restore drill~~ ✅ 2026-10-16 (`scripts/restore_drill.py`, docs/restore-drill.md); secrets → /etc/ai-trader/
 - Dropped: /v1/limits risk panel (protection theater until real caps merge)
 
 ## Deferred (go-live)
@@ -1334,6 +1334,33 @@ Eval is CLOSED: decision-path changes now allowed on main, but each HIGH-blast i
   Sadece TAM korunan pozisyonda fiyat dolar (kısmi/indeterminate → 0.0 = app'te "—"),
   çoklu stop'ta en yüksek; order book hatası snapshot'ı düşürmez. 6 yeni test, suite 1833 pass /
   2 fail = laptop ölü Alpaca key (401). Box'a DEPLOY EDİLMEDİ (prod pull #52 kararına bağlı).
+
+## Daily loop 2026-10-16 (prod-fusapp01 @da2e09c → f780692; yedek ilk kez geri okundu)
+- **Canlı durum** (box localhost, Cuma seans öncesi 06:07 UTC): eval 1M **GO** 22/10 gün,
+  Sharpe 1.99, Sortino 3.50, MaxDD −1.52%, Calmar 20.11, +2.25% vs SPY +1.86% → `beats_spy` PASS.
+  Equity $112,648.66, cash $33,730.56, 7 pozisyon, daily +$148.25 (+0.13%).
+- **10-15 gece koşusu:** exit 0, 22:31→00:39 UTC, 11/11 Hold, 0 BUY, inert `active` (2/229),
+  0/235 naked. **İkinci canlı time exit:** UNH 15 (42 bar, −0.98%) → market sell
+  `tr-exit-time-UNH-20261015` accepted, 2 koruma bacağı serbest → bugün açılışta dolar; snapshot'ta
+  UNH `stop_loss 0` = coverage'ın `exiting` kovası, naked DEĞİL. XOM stop ratchet.
+- Gözlem (karar yolu, dokunulmadı): UNH council'ı exit emri verildikten SONRA da koştu ($2.15,
+  "exit path must stay open") — çıkıştaki isim için council boşa; atlamak = council akışı → Canberk.
+  UNH council 00:27 UTC'de yine close'suz 10-15 bar'ı ile (`fix/ohlcv-settle-newest-close` kanıtı +1)
+  ve price-anomaly "3 closes, need 10" ile SKIP (`fix/warm-bar-cache-for-buy-gates` kanıtı +1).
+- 21:45 UTC preflight'ta dünkü `BUY gates short of cached bars` satırı doğrulandı (9/11, 2026-09-11).
+- [x] **f780692 (prod):** `scripts/restore_drill.py` — 07-04'ten beri her gece giden 3 artifact
+  hiç geri okunmamıştı. Temp dir'e restore + header (WAL değil) + `integrity_check` + ADR-009 scrub +
+  `TradeLogRepository` ile box gibi açıp her mapped satırı ORM'den okur + snapshot JSONL + güvenli tar
+  extract (`filter="data"`) + `TradingMemoryLog` parse + tazelik (96 sa) + `--live-db` gap. Eksik
+  artifact FAIL (backup.py hedef yoksa "skipped" deyip 0 dönüyor). DB erişimi `make_engine` (guard
+  `test_engine_sites` ilk denemede raw `sqlite3.connect`'i yakaladı → factory'nin `mode=ro` yoluna
+  taşındı, allowlist genişletilmedi). 16 test; suite 2377 pass / 2 fail = laptop Alpaca 401.
+  **Drill: laptop (GitHub 758aac9) OK 1.7 sn, box OK 3.6 sn, live gap 0** — docs/restore-drill.md
+  (runbook + drill log). API import etmiyor → restart yok.
+- **Sıradaki:** (a) UNH time-exit dolumu + flat mı (kalıntı emir yok); (b) Canberk kararları:
+  `fix/warm-bar-cache-for-buy-gates`, `fix/ohlcv-settle-newest-close`/`COUNCIL_PARALLELISM=2`,
+  alarm hedefi (#91), StockTwits, exiting isimde council atlama; (c) drill'i haftalık timer'a bağlamak
+  (alert-only, eval-report gibi) — ayrı iş.
 
 ## Daily loop 2026-10-15 (prod-fusapp01 @dba0810 → bce077e; BUY gate'leri bir aydır bayat cache'le koşuyor)
 - **Canlı durum** (box localhost, Perşembe seans öncesi 06:07 UTC): eval 1M **GO** 22/10 gün,

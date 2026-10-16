@@ -68,3 +68,5 @@ backup's timestamp (RPO ≈ one day; the drill's live gap measures it).
 
 | Date (UTC) | Where | Source | Result | Notes |
 |---|---|---|---|---|
+| 2026-10-16 06:15 | laptop (py 3.14) | GitHub `758aac9` (backup 2026-10-15, shallow clone) | OK, 1.7 s | 31.0 MiB DB, 808 decisions / 762 orders / 74 closed trades, newest 00:39Z (5.7 h); 72 snapshots; memory 802 entries (55 pending) |
+| 2026-10-16 06:20 | prod-fusapp01 (py 3.12) | `/opt/ai-trader/backups/current` = `758aac9`, in sync with origin | OK, 3.6 s | live gap 0 on every audit table; `commentator_status` +1 = the ADR-009 scrub, by design |

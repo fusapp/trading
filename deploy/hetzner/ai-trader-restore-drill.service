@@ -1,0 +1,22 @@
+[Unit]
+Description=AI Trader — weekly restore drill: read the off-box backup back (alert-only)
+After=network-online.target
+Wants=network-online.target
+# Crash-before-alert backstop; failed checks alert from the drill itself.
+OnFailure=ai-trader-alert.service
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/opt/ai-trader/agent
+# For the alert channels and their secret scrub only; the drill reads no key.
+EnvironmentFile=/opt/ai-trader/secrets.env
+Environment=PYTHONPATH=.:vendor/tradingagents
+# Read-only (docs/restore-drill.md): restores into a temp dir, opens the live
+# DB mode=ro, asks origin with ls-remote. Never touches the broker.
+ExecStart=/opt/ai-trader/agent/.venv/bin/python -m scripts.restore_drill /opt/ai-trader/backups/current --origin --live-db /opt/ai-trader/agent/local.db --notify
+TimeoutStartSec=600
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

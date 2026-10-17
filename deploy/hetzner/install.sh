@@ -7,7 +7,7 @@
 #   # then: edit /opt/ai-trader/secrets.env, fill in the keys
 #   sudo systemctl enable --now ai-trader.timer ai-trader-preflight.timer \
 #     ai-trader-backup.timer ai-trader-reconcile.timer \
-#     ai-trader-commentator-retention.timer
+#     ai-trader-commentator-retention.timer ai-trader-restore-drill.timer
 #
 # Idempotent: re-running pulls latest code and re-installs units.
 #
@@ -179,6 +179,7 @@ for unit in ai-trader.service ai-trader.timer ai-trader-alert.service \
             ai-trader-reconcile.service ai-trader-reconcile.timer \
             ai-trader-commentator-retention.service \
             ai-trader-commentator-retention.timer \
+            ai-trader-restore-drill.service ai-trader-restore-drill.timer \
             ai-trader-api.service eval-report.service eval-report.timer; do
   sudo cp "${APP_DIR}/deploy/hetzner/${unit}" "/etc/systemd/system/${unit}"
 done
@@ -196,7 +197,8 @@ echo "        set -a && source ${APP_DIR}/secrets.env && set +a && \\"
 echo "        UNIVERSE='AAPL' SUBMIT=0 bash scripts/daily_run.sh"
 echo "   3. Enable the timers: sudo systemctl enable --now ai-trader.timer \\"
 echo "        ai-trader-preflight.timer ai-trader-backup.timer \\"
-echo "        ai-trader-reconcile.timer ai-trader-commentator-retention.timer"
+echo "        ai-trader-reconcile.timer ai-trader-commentator-retention.timer \\"
+echo "        ai-trader-restore-drill.timer"
 echo "   4. Check schedule:    systemctl list-timers 'ai-trader*'"
 echo "   5. Watch a run:       journalctl -u ai-trader.service -f"
 echo "============================================================"

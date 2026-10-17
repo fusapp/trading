@@ -40,7 +40,33 @@ sudo -u deploy env PYTHONPATH=.:vendor/tradingagents /opt/ai-trader/agent/.venv/
 (run from `/opt/ai-trader/agent`; `</dev/null` because a laptop ssh session
 with stdin open hangs after the remote command ends).
 
-An older day: a full clone (~350 MB), then
+### Weekly on the box
+
+`ai-trader-restore-drill.timer` (Sundays 03:30 UTC, after the 02:15 backup)
+runs the box command above with two more flags:
+
+- `--origin`: nothing under `current/` is uncommitted, and origin's branch is
+  the clone's HEAD (`git ls-remote`, no fetch, no index refresh). Only then is
+  what was drilled the off-box copy and not just the box's own clone.
+- `--notify`: failed checks go out through the ops channel as kind
+  `restore_drill` (push + GitHub, like a failed backup).
+  `OnFailure=ai-trader-alert.service` covers a crash before that.
+
+Alert-only: it restores nothing. A failed drill says not to trust that set.
+`install.sh` is the only thing that copies units, so on a box updated by
+`git pull`:
+
+```bash
+sudo cp /opt/ai-trader/deploy/hetzner/ai-trader-restore-drill.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now ai-trader-restore-drill.timer
+sudo systemctl start ai-trader-restore-drill.service  # one run now
+journalctl -u ai-trader-restore-drill.service -n 40 --no-pager
+```
+
+### An older day
+
+A full clone (~350 MB), then
 `git log --format='%h %s' -- current/local.db.gz` and
 `git show <rev>:current/<name> > dir/<name>` for each artifact.
 

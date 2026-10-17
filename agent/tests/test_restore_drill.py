@@ -10,7 +10,9 @@ from __future__ import annotations
 import gzip
 import io
 import json
+import os
 import sqlite3
+import subprocess
 import tarfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -18,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from scripts import backup, restore_drill
+from tests.github_fake import FakeGitHub
 from tradingagents_us.schemas import AgentDecision
 from tradingagents_us.storage import TradeLogRepository, make_engine
 
@@ -222,3 +225,135 @@ def test_cli_rejects_a_source_that_is_not_a_directory(
 ) -> None:
     assert restore_drill.main([str(tmp_path / "nope")]) == 1
     assert "is not a directory" in capsys.readouterr().err
+
+
+# --- --origin: the box drills its own clone; that proves the off-box copy only
+# when the clone holds nothing uncommitted and origin serves its HEAD.
+
+_GIT_ID = ("-c", "user.name=drill", "-c", "user.email=drill@example.invalid",
+           "-c", "commit.gpgsign=false")
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *_GIT_ID, *args],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+@pytest.fixture
+def pushed(tmp_path: Path, live_db: Path) -> Path:
+    """backup.py's layout: <clone>/current/<artifacts>, committed and pushed."""
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(clone)], check=True)
+    _git(clone, "remote", "add", "origin", str(origin))
+    current = _write_artifacts(clone / "current", live_db)
+    _git(clone, "add", "-A")
+    _git(clone, "commit", "-q", "-m", "backup 2026-10-15")
+    _git(clone, "push", "-q", "origin", "HEAD")
+    return current
+
+
+def _drill_origin(source: Path, **kw: object) -> int:
+    return restore_drill.run(source, live_db=None, max_age_hours=96, now=NOW, origin=True, **kw)
+
+
+def test_a_pushed_backup_is_the_one_origin_serves(
+    pushed: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    head = _git(pushed, "rev-parse", "--short=7", "HEAD")
+    assert _drill_origin(pushed) == 0
+    assert f"origin/main serves the drilled commit {head}" in capsys.readouterr().out
+
+
+def test_a_commit_that_never_reached_origin_fails(
+    pushed: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # What a failed nightly push leaves behind: the clone moved on, origin did not.
+    (pushed / "eval_snapshots.jsonl.gz").write_bytes(
+        gzip.compress((json.dumps({"ts": RUN.isoformat(), "equity": 1.0}) + "\n").encode())
+    )
+    _git(pushed, "commit", "-q", "-am", "backup 2026-10-16")
+    assert _drill_origin(pushed) == 1
+    assert "what was drilled is not what origin serves" in capsys.readouterr().out
+
+
+def test_an_uncommitted_artifact_fails(pushed: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (pushed / "memory.tar.gz").write_bytes((pushed / "memory.tar.gz").read_bytes() + b"\0")
+    assert _drill_origin(pushed) == 1
+    assert "uncommitted in the backup clone (M current/memory.tar.gz)" in capsys.readouterr().out
+
+
+def test_a_source_outside_a_clone_cannot_prove_origin(
+    current: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _drill_origin(current) == 1
+    assert "cannot compare with origin" in capsys.readouterr().out
+
+
+def test_the_origin_check_does_not_write_the_clone(pushed: Path) -> None:
+    git_dir = pushed.parent / ".git"
+    # A stat change with the same bytes: a plain `git status` would refresh
+    # the index for it, which the drill's --no-optional-locks must not.
+    for p in pushed.iterdir():
+        os.utime(p, (p.stat().st_atime, p.stat().st_mtime + 60))
+    before = {p: p.read_bytes() for p in git_dir.rglob("*") if p.is_file()}
+    _drill_origin(pushed)
+    assert {p: p.read_bytes() for p in git_dir.rglob("*") if p.is_file()} == before
+
+
+# --- --notify and the weekly unit
+
+
+def test_a_failed_drill_alerts_through_the_ops_channel(
+    current: Path, fake_github: FakeGitHub
+) -> None:
+    (current / "memory.tar.gz").unlink()
+    assert restore_drill.run(current, live_db=None, max_age_hours=96, now=NOW, notify=True) == 1
+    assert len(fake_github.opened) == 1
+    body = str(fake_github.opened[0]["body"])
+    assert "<!-- box-alert-kind:restore_drill -->" in body
+    assert "memory.tar.gz: not in the backup" in body
+
+
+def test_a_passing_drill_sends_nothing(current: Path, fake_github: FakeGitHub) -> None:
+    assert restore_drill.run(current, live_db=None, max_age_hours=96, now=NOW, notify=True) == 0
+    assert fake_github.opened == []
+
+
+def test_a_missing_clone_alerts_too(tmp_path: Path, fake_github: FakeGitHub) -> None:
+    assert restore_drill.main([str(tmp_path / "gone"), "--notify"]) == 1
+    assert "the backup clone is gone" in str(fake_github.opened[0]["body"])
+
+
+_DEPLOY = Path(__file__).resolve().parents[2] / "deploy" / "hetzner"
+
+
+def test_the_timer_drills_weekly_after_the_nights_backup() -> None:
+    settings = [
+        ln for ln in (_DEPLOY / "ai-trader-restore-drill.timer").read_text().splitlines()
+        if ln and not ln.startswith("#")
+    ]
+    assert "OnCalendar=Sun *-*-* 03:30:00 UTC" in settings  # backup: 02:15 + up to 5 min
+    assert "Persistent=true" in settings
+
+
+def test_the_service_drills_the_pushed_clone_and_pages() -> None:
+    service = (_DEPLOY / "ai-trader-restore-drill.service").read_text()
+    exec_start = next(ln for ln in service.splitlines() if ln.startswith("ExecStart="))
+    args = exec_start.split()
+    assert args[1:4] == ["-m", "scripts.restore_drill", "/opt/ai-trader/backups/current"]
+    for flag in ("--origin", "--notify", "--live-db"):
+        assert flag in args, flag
+    assert "OnFailure=ai-trader-alert.service" in service
+    assert "User=deploy" in service
+
+
+def test_install_ships_and_enables_the_drill() -> None:
+    install = (_DEPLOY / "install.sh").read_text()
+    loop = install.split("for unit in", 1)[1].split("; do", 1)[0]
+    assert "ai-trader-restore-drill.service" in loop
+    assert "ai-trader-restore-drill.timer" in loop
+    assert "ai-trader-restore-drill.timer" in install.split("set -euo pipefail", 1)[0]

@@ -1,0 +1,11 @@
+[Unit]
+Description=AI Trader restore drill — weekly, Sundays 03:30 UTC
+
+[Timer]
+# Sunday: no trading run, and the 02:15 (+5 min) backup has pushed. The newest
+# decision is Saturday's ~00:40 UTC, well inside the drill's 96h window.
+OnCalendar=Sun *-*-* 03:30:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

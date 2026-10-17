@@ -26,6 +26,12 @@ Freshness: the newest decision and the newest snapshot must be younger than
 the restored row counts are set against the live file, opened read-only; the
 gap is what a restore would lose right now.
 
+--origin is for the box, which drills its own backup clone: that proves the
+off-box copy only when nothing under the source is uncommitted and origin's
+branch is the clone's HEAD. `git ls-remote` asks origin without fetching.
+--notify sends the failed checks through the ops channel (push + GitHub), as
+backup.py does for a failed push; ai-trader-restore-drill.timer runs it weekly.
+
 Read-only against its inputs. Artifacts are restored into a temporary
 directory removed on exit and --live-db is opened with mode=ro; it never
 writes to the box's DB, the backup clone, or the broker. Exit 0 when every
@@ -33,6 +39,7 @@ check passed, 1 when any failed.
 
     python -m scripts.restore_drill ~/trading-backups/current
     python -m scripts.restore_drill DIR --live-db /opt/ai-trader/agent/local.db
+    python -m scripts.restore_drill /opt/ai-trader/backups/current --origin --notify
 """
 
 from __future__ import annotations
@@ -41,6 +48,7 @@ import argparse
 import gzip
 import json
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -64,6 +72,7 @@ SNAPSHOT_ARTIFACT = "eval_snapshots.jsonl.gz"
 MEMORY_ARTIFACT = "memory.tar.gz"
 MEMORY_LOG = "trading_memory.md"
 DEFAULT_MAX_AGE_HOURS = 96.0
+GIT_TIMEOUT_S = 60
 _SQLITE_MAGIC = b"SQLite format 3\x00"
 
 #: The column each audit table is dated by, for its "newest row" line.
@@ -358,7 +367,66 @@ def compare_live(restored: dict[str, int], live_db: Path, drill: Drill) -> None:
                    "the backup came from?")
 
 
-def run(source: Path, *, live_db: Path | None, max_age_hours: float, now: datetime) -> int:
+def _git(source: Path, *args: str) -> str:
+    # --no-optional-locks: `git status` would otherwise refresh the clone's index.
+    return subprocess.run(
+        ["git", "--no-optional-locks", "-C", str(source), *args],
+        check=True, capture_output=True, text=True, timeout=GIT_TIMEOUT_S,
+    ).stdout.strip()
+
+
+def check_origin(source: Path, drill: Drill) -> None:
+    """The drilled files are what origin serves: all committed, HEAD pushed."""
+    print("off-box copy (origin)")
+    try:
+        dirty = _git(source, "status", "--porcelain", "--", ".")
+        branch = _git(source, "rev-parse", "--abbrev-ref", "HEAD")
+        head = _git(source, "rev-parse", "HEAD")
+        served = _git(source, "ls-remote", "origin", f"refs/heads/{branch}").split()
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "").strip() or str(exc)
+        drill.fail(f"cannot compare with origin: {detail}")
+        return
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        drill.fail(f"cannot compare with origin: {exc}")
+        return
+    if dirty:
+        drill.fail(f"uncommitted in the backup clone ({dirty.splitlines()[0].strip()}): "
+                   "the drilled files are not what was pushed")
+    if not served:
+        drill.fail(f"origin has no branch {branch}")
+    elif served[0] != head:
+        drill.fail(f"origin/{branch} is {served[0][:7]} but the clone is at {head[:7]}: "
+                   "what was drilled is not what origin serves")
+    else:
+        drill.ok(f"origin/{branch} serves the drilled commit {head[:7]}")
+
+
+def _alert(source: Path, failures: list[str]) -> None:
+    body = "\n".join(
+        [f"{len(failures)} check(s) failed restoring {source}:"]
+        + [f"- {f}" for f in failures]
+        + ["Do not restore from this set. journalctl -u ai-trader-restore-drill; "
+           "runbook docs/restore-drill.md"]
+    )
+    try:
+        from tradingagents_us.notifications.ops_channel import send_ops_alert
+
+        delivery = send_ops_alert("⚠️ Restore drill FAILED", body, kind="restore_drill")
+        print(f"restore drill: alert {delivery.describe()}", file=sys.stderr)
+    except Exception as exc:
+        print(f"restore drill: alert failed: {exc}", file=sys.stderr)
+
+
+def run(
+    source: Path,
+    *,
+    live_db: Path | None,
+    max_age_hours: float,
+    now: datetime,
+    origin: bool = False,
+    notify: bool = False,
+) -> int:
     drill = Drill(now=now, max_age_hours=max_age_hours)
     started = time.monotonic()
     print(f"restore drill — {source}")
@@ -366,6 +434,8 @@ def run(source: Path, *, live_db: Path | None, max_age_hours: float, now: dateti
                if not (source / a).is_file()]
     for name in missing:
         drill.fail(f"{name}: not in the backup")
+    if origin:
+        check_origin(source, drill)
     with tempfile.TemporaryDirectory(prefix="restore-drill-") as tmp:
         work = Path(tmp)
         counts = None
@@ -380,6 +450,8 @@ def run(source: Path, *, live_db: Path | None, max_age_hours: float, now: dateti
     elapsed = time.monotonic() - started
     if drill.failures:
         print(f"RESTORE DRILL FAILED — {len(drill.failures)} check(s) in {elapsed:.1f}s")
+        if notify:
+            _alert(source, drill.failures)
         return 1
     print(f"RESTORE DRILL OK — 3 artifacts restored and read back in {elapsed:.1f}s")
     return 0
@@ -391,12 +463,18 @@ def main(argv: list[str] | None = None) -> int:
                     "(the backup clone's current/, or a dated S3 prefix downloaded)")
     ap.add_argument("--live-db", type=Path, help="live local.db to compare row counts with")
     ap.add_argument("--max-age-hours", type=float, default=DEFAULT_MAX_AGE_HOURS)
+    ap.add_argument("--origin", action="store_true",
+                    help="source is inside a git clone: require it committed and pushed")
+    ap.add_argument("--notify", action="store_true",
+                    help="send failed checks through the ops channel (push + GitHub)")
     args = ap.parse_args(argv)
     if not args.source.is_dir():
         print(f"restore drill: {args.source} is not a directory", file=sys.stderr)
+        if args.notify:
+            _alert(args.source, ["not a directory: the backup clone is gone"])
         return 1
     return run(args.source, live_db=args.live_db, max_age_hours=args.max_age_hours,
-               now=datetime.now(UTC))
+               now=datetime.now(UTC), origin=args.origin, notify=args.notify)
 
 
 if __name__ == "__main__":

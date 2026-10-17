@@ -92,7 +92,7 @@ Eval is CLOSED: decision-path changes now allowed on main, but each HIGH-blast i
       an explicit `MAX_GROSS_EXPOSURE_PCT`. Decision-path change → tests + supervised run. This is
       why `assert acct.cash >= 0` no longer lives in test_dataflows_smoke.py.
 - Circuit breaker real inputs (5/7 gates placeholder-fed) — first supervised live week, uses last_equity from #9
-- Position detail screen + per-ticker history from snapshot JSONL; kill-switch audit trail + header pill (after #2); LLM cost panel (after pipeline.py tokens_in/out=0 stub fix); TR-primary language sweep; paper lane as permanent staging (templated units + EXPECTED_ALPACA_ACCOUNT interlock); ws.ts is implemented-unused (+ close() reconnect bug) — decide: wire realtime or delete; ~~backup restore drill~~ ✅ 2026-10-16 (`scripts/restore_drill.py`, docs/restore-drill.md); secrets → /etc/ai-trader/
+- Position detail screen + per-ticker history from snapshot JSONL; kill-switch audit trail + header pill (after #2); LLM cost panel (after pipeline.py tokens_in/out=0 stub fix); TR-primary language sweep; paper lane as permanent staging (templated units + EXPECTED_ALPACA_ACCOUNT interlock); ws.ts is implemented-unused (+ close() reconnect bug) — decide: wire realtime or delete; ~~backup restore drill~~ ✅ 2026-10-16 (`scripts/restore_drill.py`, docs/restore-drill.md; weekly timer 10-17); secrets → /etc/ai-trader/
 - Dropped: /v1/limits risk panel (protection theater until real caps merge)
 
 ## Deferred (go-live)
@@ -1334,6 +1334,33 @@ Eval is CLOSED: decision-path changes now allowed on main, but each HIGH-blast i
   Sadece TAM korunan pozisyonda fiyat dolar (kısmi/indeterminate → 0.0 = app'te "—"),
   çoklu stop'ta en yüksek; order book hatası snapshot'ı düşürmez. 6 yeni test, suite 1833 pass /
   2 fail = laptop ölü Alpaca key (401). Box'a DEPLOY EDİLMEDİ (prod pull #52 kararına bağlı).
+
+## Daily loop 2026-10-17 (prod-fusapp01 @48fb17c → 0b7df2c; restore drill artık haftalık ve origin'e karşı)
+- **Canlı durum** (box localhost, Cumartesi 06:07 UTC): eval 1M **GO** 22/10 gün, Sharpe 3.07,
+  Sortino 5.69, MaxDD −1.52%, Calmar 30.28, +3.21% vs SPY +2.60% → `beats_spy` PASS.
+  Equity $111,771.57, cash $63,482.40, **4 pozisyon** (AAPL 33, AMZN 42, MSFT 27, XOM 68),
+  daily (Cuma) −$924.08 (−0.82%). Realized all-time 95 trade, net +$4,228.19, PF 3.2.
+- **10-16 seans (7→4 pozisyon):** UNH time exit açılışta doldu (13:30–13:33, 15 hisse, net
+  −$87.95, flat, kalıntı emir yok); META 18 stop @711.60 **+$2,805**; GOOGL 32 stop @339.46
+  **−$498.87** — 10-13 gecesi yeniden girişin (10-06 time exit sonrası) 2 günde stop'u = churn'ün
+  ilk realized maliyeti. (NVDA 10-14 stop @221.42 +$1,238.)
+- **10-16 gece koşusu:** exit 0, 22:31→00:39 UTC, 11/11 Hold, 0 BUY, AAPL stop ratchet, inert
+  3 run-day (2/232), 0/170 naked. 9 isimde price-anomaly yine "not enough bars" SKIP; XOM'da
+  ise hesaplandı ve `price_z_score=3.37` refusal verdi — bayat `price_cache` üstünde z-score
+  (Hold zaten non-actionable, etkisi yok) → `fix/warm-bar-cache-for-buy-gates` kanıtı +1. UNH
+  council 00:27 UTC'de yine close'suz 10-16 bar → `fix/ohlcv-settle-newest-close` kanıtı +1.
+- [x] **0b7df2c (prod):** `ai-trader-restore-drill.{service,timer}` — Pazar 03:30 UTC (02:15 backup
+  sonrası), alert-only. `--origin`: `current/` commit'li mi + `git ls-remote` origin/main == clone
+  HEAD mi (fetch yok, `--no-optional-locks` → index yazılmaz; testte flag'siz hali düşüyor =
+  mutation doğrulandı) → box'ın kendi clone'unu drill etmek artık off-box kopyayı kanıtlıyor.
+  `--notify`: başarısız check'ler ops channel'dan kind `restore_drill` (backup.py gibi), crash için
+  OnFailure. install.sh unit listesi + enable satırları. 11 test; suite 2388 pass / 2 fail = laptop
+  Alpaca 401 (doğrulandı). **Box'ta elle çalıştırıldı: OK 4.6 sn, origin fd7f083, live gap 0**;
+  timer enabled, ilk koşu 10-18 03:30 UTC. API import etmiyor → restart yok.
+- **Sıradaki:** (a) 10-18 03:30 timer koşusu journal'da OK mi; (b) Canberk kararları değişmedi:
+  `fix/warm-bar-cache-for-buy-gates`, `fix/ohlcv-settle-newest-close`/`COUNCIL_PARALLELISM=2`,
+  alarm hedefi (#91 — drill alarmı da aynı boş kanala gider), StockTwits, exiting isimde council
+  atlama, time-exit sonrası yeniden giriş churn'ü (GOOGL −$499).
 
 ## Daily loop 2026-10-16 (prod-fusapp01 @da2e09c → f780692; yedek ilk kez geri okundu)
 - **Canlı durum** (box localhost, Cuma seans öncesi 06:07 UTC): eval 1M **GO** 22/10 gün,

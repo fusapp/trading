@@ -1335,6 +1335,35 @@ Eval is CLOSED: decision-path changes now allowed on main, but each HIGH-blast i
   çoklu stop'ta en yüksek; order book hatası snapshot'ı düşürmez. 6 yeni test, suite 1833 pass /
   2 fail = laptop ölü Alpaca key (401). Box'a DEPLOY EDİLMEDİ (prod pull #52 kararına bağlı).
 
+## Daily loop 2026-10-18 (prod-fusapp01 @3702bbc → reentry report; çıkılan isim günler içinde daha pahalıya geri alınıyor)
+- **Canlı durum** (box localhost, Pazar 06:07 UTC): eval 1M **GO** 23/10 gün (Alpaca 10-16'yı
+  roll etti, 22→23), Sharpe 2.03, Sortino 3.54, MaxDD −1.58%, Calmar 19.36, +2.36% vs SPY
+  +1.47% → `beats_spy` PASS. 3M GO 66 gün, Sharpe 1.14, MaxDD −3.58%, +4.61% vs SPY +1.92%.
+  Equity $111,770.94, cash $63,481.77, 4 pozisyon (AAPL 33, AMZN 42, MSFT 27, XOM 68, hepsi
+  stop'lu), daily 0 (hafta sonu). Realized 95 trade, net +$4,228.19, PF 3.20, win 54.7%.
+- **İlk zamanlı restore drill (10-18 03:30 UTC) OK:** 5.0 sn, 3 artifact, live gap 0
+  (commentator_status +1 = drill'den sonra yazılan satır), eval snapshot 26.9 sa (Cumartesi koşu
+  yok — normal). Dünün (a) maddesi kapandı.
+- [x] **`scripts/reentry_report.py` + `execution/reentry.py` (read-only, off-eval-path):** isim
+  flat'e indikten sonra geri alındı mı, kaç günde, çıktığı fiyata göre kaça. Flat exit = long'u
+  tam sıfıra indiren satış (trim değil), sınıfı = sıfırlayan fill'in `classify_exit`'i, fiyat =
+  aynı NY seansındaki tüm satışların VWAP'ı; re-entry = sonraki ilk alım seansı; buyback $ =
+  (re-entry VWAP − exit VWAP) × küçük qty; pencere (default 14 gün) dolmamışsa **pending**
+  (oranın paydasından çıkar). Re-entry lot'ları FIFO ile realized/open'a kadar izlenir. Roll-up
+  `exit_quality` gibi flatten/unknown'ı dışlar. 11 test; suite 2399 pass / 2 fail = laptop
+  Alpaca 401 (doğrulandı).
+- **Box'ta gerçek veri (130 fill, 11 flat exit):** strategy roll-up 9 flat exit, 4 pending, 5
+  decided, **2 geri alındı, ikisi de daha PAHALIYA: GOOGL time exit 10-06 @345.46 → 10-14
+  @355.05 (8.0 gün, +$306.90), XOM TP 10-09 @170.04 → 10-14 @175.02 (4.9 gün, +$278.83, açık)**
+  = $585.73 buyback; GOOGL re-entry'si sonra stop −$498.87. Stop'lar: JPM/V geri alınmadı, NVDA/
+  META/GOOGL pending. Flatten (06-24 temizliği) ertesi sabah DAHA UCUZA geri alınmış (−$571.87)
+  — roll-up'a karışsaydı stratejinin buyback maliyeti $13.86'ya iniyordu. n=2, kanıt değil
+  sinyal; time-exit/TP sonrası cooldown = karar yolu → Canberk.
+- **Sıradaki:** (a) pending'ler (NVDA 10-14, UNH/META/GOOGL 10-16) 10-28/10-30'a kadar geri
+  alınırsa raporu tekrar koş; (b) Canberk kararları değişmedi: `fix/warm-bar-cache-for-buy-gates`,
+  `fix/ohlcv-settle-newest-close`/`COUNCIL_PARALLELISM=2`, alarm hedefi (#91), StockTwits,
+  exiting isimde council atlama, re-entry cooldown (bugünkü $585.73 + GOOGL −$499).
+
 ## Daily loop 2026-10-17 (prod-fusapp01 @48fb17c → 0b7df2c; restore drill artık haftalık ve origin'e karşı)
 - **Canlı durum** (box localhost, Cumartesi 06:07 UTC): eval 1M **GO** 22/10 gün, Sharpe 3.07,
   Sortino 5.69, MaxDD −1.52%, Calmar 30.28, +3.21% vs SPY +2.60% → `beats_spy` PASS.

@@ -22,7 +22,9 @@ from scripts.eval_report import (
     _verdict,
     build_gates,
     build_scorecard,
+    stability_or_none,
 )
+from tradingagents_us.risk.verdict_stability import Stability
 
 from ..broker_errors import broker_http_exception
 from ..deps import require_token
@@ -41,6 +43,69 @@ class Gate(BaseModel):
     name: str
     passed: bool | None
     detail: str
+
+
+class WindowOut(BaseModel):
+    base: str  # ISO session date of the window's baseline close
+    end: str
+    total_return_pct: float
+    sharpe: float
+    max_dd_pct: float
+    passed: bool
+
+
+class SessionReturnOut(BaseModel):
+    session: str
+    return_pct: float
+
+
+class StabilityOut(BaseModel):
+    """Same-length windows ending on each of the last N sessions: how often the
+    headline window's verdict would have read the same, and which session
+    moved it last."""
+
+    window_days: int
+    passed: int
+    total: int
+    flips: int
+    sharpe_min: float
+    sharpe_max: float
+    windows: list[WindowOut]  # oldest first; the last is the headline window
+    departed: SessionReturnOut | None
+    entered: SessionReturnOut | None
+
+
+def _stability_out(st: Stability) -> StabilityOut:
+    lo, hi = st.sharpe_range
+
+    def _ret(r):
+        return (
+            None
+            if r is None
+            else SessionReturnOut(session=r.session.isoformat(), return_pct=round(r.ret * 100, 2))
+        )
+
+    return StabilityOut(
+        window_days=st.window_days,
+        passed=st.passed_count,
+        total=len(st.windows),
+        flips=st.flips,
+        sharpe_min=round(lo, 2),
+        sharpe_max=round(hi, 2),
+        windows=[
+            WindowOut(
+                base=w.base.isoformat(),
+                end=w.end.isoformat(),
+                total_return_pct=round(w.total_return * 100, 2),
+                sharpe=round(w.sharpe, 2),
+                max_dd_pct=round(w.max_dd * 100, 2),
+                passed=w.passed,
+            )
+            for w in st.windows
+        ],
+        departed=_ret(st.departed),
+        entered=_ret(st.entered),
+    )
 
 
 class EvalResult(BaseModel):
@@ -62,6 +127,9 @@ class EvalResult(BaseModel):
     gate_sharpe: float
     gate_max_dd_pct: float
     gates: list[Gate]
+    # Optional so builds that never learned it still parse; None when the
+    # period has no longer history or the second broker read failed.
+    stability: StabilityOut | None = None
 
 
 def _build(period: str, benchmark: bool) -> EvalResult:
@@ -86,6 +154,7 @@ def _build(period: str, benchmark: bool) -> EvalResult:
         gate_sharpe=GATE_SHARPE,
         gate_max_dd_pct=GATE_MAX_DD * 100,
         gates=[Gate(**g) for g in build_gates(sc)],
+        stability=_stability_out(st) if (st := stability_or_none(period, sc)) else None,
     )
 
 

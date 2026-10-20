@@ -165,3 +165,56 @@ def test_broker_unreachable_is_503_and_not_cached(
     # the failure must not be cached: once the broker answers, so do we
     monkeypatch.setattr("api.routes.eval.build_scorecard", lambda period, benchmark: _sc())
     assert client.get("/v1/eval").status_code == 200
+
+
+def test_stability_serialized_when_available(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import date
+
+    from tradingagents_us.risk.verdict_stability import SessionReturn, Stability, WindowVerdict
+
+    def _w(base: date, end: date, sharpe: float, passed: bool) -> WindowVerdict:
+        return WindowVerdict(base, end, 0.0137, sharpe, -0.0158, passed)
+
+    st = Stability(
+        window_days=21,
+        windows=(
+            _w(date(2026, 9, 17), date(2026, 10, 15), 2.094, True),
+            _w(date(2026, 9, 18), date(2026, 10, 16), 1.19, True),
+            _w(date(2026, 9, 21), date(2026, 10, 19), -0.431, False),
+        ),
+        departed=SessionReturn(date(2026, 9, 21), 0.01908),
+        entered=SessionReturn(date(2026, 10, 19), 0.00518),
+    )
+    monkeypatch.setattr("api.routes.eval.build_scorecard", lambda period, benchmark: _sc())
+    monkeypatch.setattr("api.routes.eval.stability_or_none", lambda period, sc: st)
+    b = client.get("/v1/eval").json()["stability"]
+    assert (b["window_days"], b["passed"], b["total"], b["flips"]) == (21, 2, 3, 1)
+    assert (b["sharpe_min"], b["sharpe_max"]) == (-0.43, 2.09)
+    assert b["windows"][-1] == {
+        "base": "2026-09-21",
+        "end": "2026-10-19",
+        "total_return_pct": 1.37,
+        "sharpe": -0.43,
+        "max_dd_pct": -1.58,
+        "passed": False,
+    }
+    assert b["departed"] == {"session": "2026-09-21", "return_pct": 1.91}
+    assert b["entered"] == {"session": "2026-10-19", "return_pct": 0.52}
+
+
+def test_stability_null_when_unavailable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, str] = {}
+
+    def _none(period: str, sc: Scorecard) -> None:
+        seen["period"] = period
+
+    monkeypatch.setattr("api.routes.eval.build_scorecard", lambda period, benchmark: _sc())
+    monkeypatch.setattr("api.routes.eval.stability_or_none", _none)
+    b = client.get("/v1/eval?period=3M").json()
+    assert b["stability"] is None
+    assert b["verdict"] == "GO"  # the headline does not depend on it
+    assert seen["period"] == "3M"

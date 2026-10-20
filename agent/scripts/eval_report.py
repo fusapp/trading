@@ -24,15 +24,17 @@ import json
 import os
 import sys
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import httpx
 import pandas as pd
 
 from tradingagents_us.dataflows.alpaca_broker import AlpacaClient
 from tradingagents_us.log_redaction import install as install_log_redaction
 from tradingagents_us.risk import metrics
+from tradingagents_us.risk.verdict_stability import Stability, describe, rolling_verdicts
 
 # ADR-005 gates (eval phase). Sharpe is the primary signal; MaxDD bounds risk.
 GATE_SHARPE = 1.0
@@ -41,6 +43,11 @@ MIN_TRADING_DAYS = 10  # below this the metrics are too noisy to trust
 HOLDOUT_MIN_DAYS = 60  # below this a walk-forward holdout split is meaningless
 # Out-of-sample Sharpe below IS Sharpe by more than this fraction = regime-fit warning.
 HOLDOUT_DEGRADE_FRAC = 0.5
+# Same-length windows ending on each of the last N sessions — how often the
+# headline window's verdict would have read the same.
+STABILITY_LOOKBACK = 10
+# The longer Alpaca period that holds a full window plus the lookback.
+_STABILITY_PERIOD = {"1M": "3M", "3M": "6M", "6M": "1A"}
 # Alpaca stamps a 1D equity bar at 20:00 New York on its session day, which is
 # 00:00 UTC of the NEXT calendar day; the session is the New York date.
 _EXCHANGE_TZ = ZoneInfo("America/New_York")
@@ -65,6 +72,7 @@ class Scorecard:
     oos_sharpe: float | None = None  # out-of-sample holdout (last 1/3) Sharpe
     rf_annual: float = 0.0  # annualized risk-free rate used for Sharpe/Sortino
     rf_source: str = "none"  # "fred:DGS3MO" | "env" | "none"
+    end_session: date | None = None  # New York session of the newest equity bar
 
 
 def _equity_series(history: dict) -> pd.Series:
@@ -230,7 +238,50 @@ def build_scorecard(period: str, benchmark: bool) -> Scorecard:
         oos_sharpe=wf[1] if wf else None,
         rf_annual=rf,
         rf_source=rf_source,
+        end_session=equity.index[-1].date(),
     )
+
+
+def build_stability(
+    period: str, sc: Scorecard, lookback: int = STABILITY_LOOKBACK
+) -> Stability | None:
+    """Score the scorecard's window length ending on each of the last
+    `lookback` sessions. None for a period with no longer history to draw on,
+    or while the headline window is still too short to carry a verdict.
+
+    Fetches the longer period separately and cuts it at the scorecard's own
+    newest session, so a bar Alpaca rolls in between the two calls cannot make
+    the newest window disagree with the headline."""
+    longer = _STABILITY_PERIOD.get(period)
+    if longer is None or sc.days < MIN_TRADING_DAYS or sc.end_session is None:
+        return None
+    with AlpacaClient() as ac:
+        history = ac.portfolio_history(period=longer, timeframe="1D")
+    equity = _equity_series(history)
+    start = os.environ.get("EVAL_START_DATE")
+    if start:
+        equity = equity[equity.index >= pd.Timestamp(start, tz="UTC")]
+    equity = equity[equity.index <= pd.Timestamp(sc.end_session, tz="UTC")]
+    return rolling_verdicts(
+        equity,
+        window_days=sc.days,
+        lookback=lookback,
+        rf=sc.rf_annual,
+        gate_sharpe=GATE_SHARPE,
+        gate_max_dd=GATE_MAX_DD,
+    )
+
+
+def stability_or_none(
+    period: str, sc: Scorecard, lookback: int = STABILITY_LOOKBACK
+) -> Stability | None:
+    """`build_stability`, but a broker failure on the second fetch only drops
+    the section: the headline scorecard already built, and it is the verdict."""
+    try:
+        return build_stability(period, sc, lookback=lookback)
+    except (httpx.HTTPError, ValueError) as exc:
+        print(f"  (verdict stability unavailable: {exc})", file=sys.stderr)
+        return None
 
 
 def _snapshot_summary() -> tuple[float, float, int] | None:
@@ -406,6 +457,14 @@ def _print(sc: Scorecard) -> None:
     print("=" * 56 + "\n")
 
 
+def _print_stability(st: Stability | None) -> None:
+    if st is None:
+        return
+    for line in describe(st):
+        print(f"  {line}")
+    print("=" * 56 + "\n")
+
+
 def _notify(sc: Scorecard, verdict: str) -> None:
     """Push the scorecard verdict to every registered device (best-effort)."""
     try:
@@ -446,6 +505,9 @@ def main() -> int:
     ap.add_argument("--period", default="1M", help="Alpaca history window (1M/3M/6M/1A)")
     ap.add_argument("--no-benchmark", action="store_true", help="skip SPY benchmark")
     ap.add_argument("--notify", action="store_true", help="push the verdict to registered devices")
+    ap.add_argument("--stability", type=int, default=STABILITY_LOOKBACK, metavar="N",
+                    help="score the same-length window ending on each of the last N "
+                         "sessions (0 = off)")
     ap.add_argument("--strict", action="store_true",
                     help="exit non-zero unless verdict is GO (default: exit 0 whenever "
                          "the scorecard is produced — verdict is data, not job health)")
@@ -453,6 +515,8 @@ def main() -> int:
 
     sc = build_scorecard(period=args.period, benchmark=not args.no_benchmark)
     _print(sc)
+    if args.stability > 0:
+        _print_stability(stability_or_none(args.period, sc, lookback=args.stability))
     verdict, _ = _verdict(sc)
     if args.notify:
         _notify(sc, verdict)

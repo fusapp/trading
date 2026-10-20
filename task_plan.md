@@ -1335,6 +1335,33 @@ Eval is CLOSED: decision-path changes now allowed on main, but each HIGH-blast i
   çoklu stop'ta en yüksek; order book hatası snapshot'ı düşürmez. 6 yeni test, suite 1833 pass /
   2 fail = laptop ölü Alpaca key (401). Box'a DEPLOY EDİLMEDİ (prod pull #52 kararına bağlı).
 
+## Daily loop 2026-10-21 (prod-fusapp01 @3ab157b → 3aa7a22; 1M NO-GO pencerenin kendisi, kitap değil)
+- **Canlı durum** (box localhost, 10-20 22:25 UTC, gece koşusu 22:31'de başladı): eval 1M
+  **NO-GO** 21/10 gün, Sharpe **−0.43**, Sortino −0.58, MaxDD −1.58%, return −0.01% vs SPY −0.91%
+  (`beats_spy` PASS). 3M **GO** 65 gün, Sharpe 1.69, MaxDD −2.86%, +6.23% vs SPY +3.54%.
+  Equity $112,163.65, cash $63,481.77, 4 pozisyon (AAPL 33, AMZN 42, MSFT 27, XOM 68, hepsi
+  stop'lu), daily (10-20) −$186.12 (−0.17%). Realized 95 trade, net +$4,228.19, PF 3.20.
+- **Flip'in sebebi:** 10-18 GO Sharpe 2.03 → 10-20 NO-GO −0.43, arada kitap +0.52% (10-19)
+  kazandı. 1M baseline 09-18 close'undan 09-21'e kaydı → pencerenin en iyi günü 09-21 (+1.91%)
+  öne düştü, +1.37%'lik ay −0.01% oldu. Alpaca 10-20'yi henüz roll etmedi (sistematik 1 seans).
+- **10-19 gece koşusu:** exit 0, 22:31→00:42 UTC, 11 council ~$24.4 (10 Hold/UW, MSFT Overweight
+  ama BUY yok), AAPL + XOM stop ratchet, 0/170 naked, inert 5 run-day (2/227). 10-19 ve 10-20
+  scheduled daily loop'ları commit bırakmadı (koşmamış).
+- [x] **3aa7a22 (prod, API restart):** `risk/verdict_stability.py` (pure) — aynı uzunluktaki
+  pencereyi son N seansın her biri için hard gate'lerle (Sharpe, DD; SPY flag, gate değil)
+  skorlar, headline'ın rf'si ile; pass/flip sayısı + öne düşen ve arkaya katılan getiri.
+  `eval_report` bölüm basar (`--stability N`, 0=kapalı), `/v1/eval` optional `stability` alanı
+  (eski build'ler parse eder). Uzun geçmiş = ikinci broker okuması, scorecard'ın kendi son
+  seansında kesilir; düşerse sadece bölüm düşer. 14 test (2 mutasyon yakalandı); suite 2413
+  pass / 2 fail = laptop Alpaca 401 (doğrulandı). **Box'ta:** 1M GO **9/10**, 1 flip, Sharpe
+  −0.43..3.46, "left 09-21 +1.91% · joined 10-19 +0.52%"; 3M GO 10/10, 0 flip, 1.14..2.33.
+  Newest window headline'ı birebir veriyor (−0.43).
+- **Sıradaki:** (a) mobil scorecard'da `stability` satırı (OTA; "son 10 pencerenin 9'u GO");
+  (b) 1M pencere 10-21/10-22'de 09-22 (−0.93%) ve 09-23 (−0.57%) günlerini de öne düşürecek →
+  Sharpe toparlanabilir, raporla; (c) Canberk kararları değişmedi: `fix/warm-bar-cache-for-buy-gates`,
+  `fix/ohlcv-settle-newest-close`/`COUNCIL_PARALLELISM=2`, alarm hedefi (#91), StockTwits,
+  exiting isimde council atlama, re-entry cooldown.
+
 ## Daily loop 2026-10-18 (prod-fusapp01 @3702bbc → reentry report; çıkılan isim günler içinde daha pahalıya geri alınıyor)
 - **Canlı durum** (box localhost, Pazar 06:07 UTC): eval 1M **GO** 23/10 gün (Alpaca 10-16'yı
   roll etti, 22→23), Sharpe 2.03, Sortino 3.54, MaxDD −1.58%, Calmar 19.36, +2.36% vs SPY

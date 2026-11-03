@@ -1335,6 +1335,36 @@ Eval is CLOSED: decision-path changes now allowed on main, but each HIGH-blast i
   çoklu stop'ta en yüksek; order book hatası snapshot'ı düşürmez. 6 yeni test, suite 1833 pass /
   2 fail = laptop ölü Alpaca key (401). Box'a DEPLOY EDİLMEDİ (prod pull #52 kararına bağlı).
 
+## Daily loop 2026-11-03 (prod-fusapp01 @78778fa, backend değişmedi; scorecard artık pencere istikrarını gösteriyor — OTA)
+- **Canlı durum** (box localhost, 16:26 UTC): eval 1M **NO-GO** 21/10 gün, Sharpe **−2.95**,
+  Sortino −3.42, MaxDD −2.48%, Calmar −6.86, return −1.47% vs SPY −2.93% (`beats_spy` PASS).
+  3M **NO-GO** 65 gün, Sharpe 0.22, MaxDD −2.86%, +1.48% vs SPY −0.49%. Stability 1M **5/10**,
+  4 flip, Sharpe −2.95..1.82 (son hamle: öne düşen 10-05 +0.80%, katılan 11-02 −1.02%; verdict
+  10-30'dan beri NO-GO, son hamle çevirmedi); 3M 9/10, 1 flip.
+- Equity $110,216.43, cash $98,150.51 (~%89 nakit), **1 pozisyon** (XOM 68, stop 171.52), daily
+  −$537 (−0.48%). AAPL 33 hisse bugün 14:03–15:04 UTC arasında kapandı (realized +$1,315.72).
+  Realized 113 trade, net +$10,054.58, win %62.0, PF 6.24.
+- **11-02 gece koşusu FAILURE (rc=1):** GOOGL council'ı `portfolio manager output carries no
+  parseable **Rating**` ile düştü — fail-safe (Hold'a default etmeyi reddediyor, tasarım gereği);
+  diğer 10 ticker Hold/non-actionable. Inert **17 run-day** (2/230 submit, top blocker Hold ×187,
+  son broker ack 10-14). 0/101 naked. Alarm yine HİÇBİR kanala gitmedi (push cihazı yok,
+  `OPS_ALERT_GITHUB_TOKEN` yok). 10-22..11-02 scheduled loop'ları commit bırakmadı; stability
+  mobil işi 10-21/10-23'te yarım kalmış, working tree'de duruyordu.
+- [x] **Mobil scorecard "Pencere istikrarı"** (OTA preview): `src/utils/stability.ts` (pure) +
+  EvalCard'da son N pencere için dot strip (en yeni = headline, büyük), özet "Son 10 pencereden 5
+  geçti · 4 dönüş · Sharpe −2.95…1.82", son hamle verdict'i çevirdiyse sebep satırı (pencere
+  kayması vs son seans). `stability` yok/null → blok gizli (eski backend parse eder). 17 jest
+  (bugünkü canlı blok dahil), mobil suite 422 pass, tsc + eslint temiz; backend pytest
+  2413 pass / 2 fail = laptop Alpaca 401 (`test_dataflows_smoke`, çıktıda 401 doğrulandı).
+  Preview APK 930889ab fingerprint 42f8d76a match; DEV token bundle'a GİRMEDİ
+  (`EXPO_NO_DOTENV=1` + eas.json preview env).
+- **Sıradaki:** (a) iOS production kanalına aynı OTA (TestFlight build 13, runtime 1033ad71) —
+  scheduled task sadece preview diyor, Canberk kararı; (b) PM "no parseable Rating" tekrar ederse
+  gece/ticker sayacı (sadece ölçüm, karar yoluna dokunmadan); (c) scheduled task `SKILL.md` bayat:
+  WAW host + `ssh agentmesh` deploy + OTA'ya DEV token gömme talimatı → prod-fusapp01 + localhost
+  okuma + token'sız OTA olarak düzeltilmeli; (d) Canberk kararları değişmedi: warm-bar-cache,
+  ohlcv-settle/`COUNCIL_PARALLELISM`, alarm hedefi (#91), StockTwits, re-entry cooldown.
+
 ## Daily loop 2026-10-21 (prod-fusapp01 @3ab157b → 3aa7a22; 1M NO-GO pencerenin kendisi, kitap değil)
 - **Canlı durum** (box localhost, 10-20 22:25 UTC, gece koşusu 22:31'de başladı): eval 1M
   **NO-GO** 21/10 gün, Sharpe **−0.43**, Sortino −0.58, MaxDD −1.58%, return −0.01% vs SPY −0.91%

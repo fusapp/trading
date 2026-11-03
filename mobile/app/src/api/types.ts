@@ -99,6 +99,44 @@ export interface EvalResult {
   gate_sharpe: number;
   gate_max_dd_pct: number;
   gates: EvalGate[];
+  /**
+   * Same-length windows ending on each of the last N sessions, scored on the
+   * hard gates. Optional: absent on a deployment that predates it, null when
+   * the second broker read behind it failed (the verdict above still stands).
+   */
+  stability?: EvalStability | null;
+}
+
+/** One same-length window from `/v1/eval`'s `stability.windows`. */
+export interface EvalWindow {
+  /** ISO session date whose close is the window's baseline. */
+  base: string;
+  end: string;
+  total_return_pct: number;
+  sharpe: number;
+  max_dd_pct: number;
+  passed: boolean;
+}
+
+/** A single session's return, in percent points. */
+export interface EvalSessionReturn {
+  session: string;
+  return_pct: number;
+}
+
+export interface EvalStability {
+  window_days: number;
+  passed: number;
+  total: number;
+  flips: number;
+  sharpe_min: number;
+  sharpe_max: number;
+  /** Oldest first; the last one is the headline window. */
+  windows: EvalWindow[];
+  /** The return that left the front of the window on the newest move. */
+  departed: EvalSessionReturn | null;
+  /** The newest session's return, which joined the back. */
+  entered: EvalSessionReturn | null;
 }
 
 export type AnalyzeStatus = 'queued' | 'running' | 'done' | 'error';

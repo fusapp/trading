@@ -49,6 +49,7 @@ import { holdingDays, holdingLabel, positionStop } from '@/utils/positions';
 import { useNow } from '@/utils/useNow';
 import { formatUsd, formatPct } from '@/utils/format';
 import { verdictTheme, PERIODS, PERIOD_DAYS, type Period } from '@/utils/equity';
+import { lastMove, stabilityA11y, stabilityMarks, stabilitySummary } from '@/utils/stability';
 import { font, TABULAR, TYPE } from '@/theme/type';
 import {
   sectorAllocation,
@@ -765,6 +766,12 @@ function EvalCard({
   const sharpeColor = gatePassed('Sharpe') === false ? fail : undefined;
   const ddColor = gatePassed('Max drawdown') === false ? fail : undefined;
   const alpha = data.spy_return_pct == null ? null : data.total_return_pct - data.spy_return_pct;
+  // The same-length windows ending on each of the last N sessions. A verdict
+  // that one session leaving the front can flip is not the same claim as one
+  // every recent window agrees with; the card has to be able to say which.
+  const marks = stabilityMarks(data.stability);
+  const stabilityLine = stabilitySummary(data.stability);
+  const move = lastMove(data.stability);
 
   return (
     <Card style={styles.card}>
@@ -875,6 +882,34 @@ function EvalCard({
       ) : null}
 
       {data.reasons.length ? <Text style={styles.meta}>{data.reasons.join(' · ')}</Text> : null}
+
+      {marks.length && stabilityLine ? (
+        <View style={styles.stabBlock}>
+          <View
+            style={styles.stabHead}
+            accessible
+            accessibilityLabel={stabilityA11y(data.stability) ?? undefined}
+          >
+            <CapsText style={styles.kickerPlain}>{tr('kicker.verdictStability')}</CapsText>
+            <View style={styles.stabDots}>
+              {marks.map((m, i) => (
+                <View
+                  key={m.end}
+                  style={[
+                    styles.stabDot,
+                    i === marks.length - 1 && styles.stabDotNewest,
+                    { backgroundColor: m.passed ? t.up : fail },
+                  ]}
+                />
+              ))}
+            </View>
+          </View>
+          <Text style={styles.meta}>{stabilityLine}</Text>
+          {move ? (
+            <Text style={move.kind === 'window' ? styles.flagText : styles.meta}>{move.text}</Text>
+          ) : null}
+        </View>
+      ) : null}
 
       {/* The one mark that outranks the verdict itself: a GO over a book that
           has submitted nothing for days. Every gate above is computed from the
@@ -1082,6 +1117,17 @@ const makeStyles = (t: Palette, sh: Shape) =>
     gateIcon: { fontSize: 11, ...font(800) },
     gateName: { ...TYPE.body, color: t.textPrimary, flex: 1 },
     gateDetail: { ...TYPE.helper, fontSize: 12, ...TABULAR, color: t.ink2 ?? t.textSecondary },
+    stabBlock: {
+      marginTop: sh.space[2],
+      paddingTop: sh.space[2],
+      borderTopWidth: sh.hairline,
+      borderTopColor: t.line ?? t.divider,
+    },
+    stabHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: sh.space[2] },
+    stabDots: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+    stabDot: { width: 8, height: 8, borderRadius: sh.radiusPill > 0 ? 4 : 0 },
+    // The headline window: the one the verdict above is read off.
+    stabDotNewest: { width: 12, height: 12, borderRadius: sh.radiusPill > 0 ? 6 : 0 },
 
     // ── Bars (order flow + sectors) ───────────────────────────
     barRow: { marginTop: sh.space[2] },

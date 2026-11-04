@@ -1335,6 +1335,40 @@ Eval is CLOSED: decision-path changes now allowed on main, but each HIGH-blast i
   çoklu stop'ta en yüksek; order book hatası snapshot'ı düşürmez. 6 yeni test, suite 1833 pass /
   2 fail = laptop ölü Alpaca key (401). Box'a DEPLOY EDİLMEDİ (prod pull #52 kararına bağlı).
 
+## Daily loop 2026-11-04 (prod-fusapp01 @78778fa → 7d2829a; inert sayacı koşuyu ikiye bölüyormuş + council harcaması ilk kez toplandı)
+- **Canlı durum** (box localhost, 06:13 UTC): eval 1M **NO-GO** 21/10 gün, Sharpe **−2.96**,
+  Sortino −3.43, MaxDD −2.48%, return −1.47% vs SPY −2.93% (`beats_spy` PASS); stability 5/10,
+  4 flip. 3M **NO-GO** 65 gün, Sharpe 0.21, MaxDD −2.86%, +1.48% vs SPY −0.49%; 9/10, 1 flip.
+  Equity $110,179.03, cash $98,150.51 (%89), 1 pozisyon (XOM 68 @175.02, stop 171.52, +$127),
+  daily −$574 (−0.52%). Alpaca son bar 11-02 (sistematik 1 seans geride).
+- **11-03 gece koşusu:** exit 0, 22:32→00:41 UTC, 11/11 Hold, 0 errored, ~$2.2–2.5/council,
+  0/68 naked. GOOGL "no parseable Rating" TEKRARLAMADI (sayaç işi gerekmedi).
+- [x] **d06ccdb (prod, API restart):** `actionability` run day = **NY seans tarihi** (UTC değil).
+  Gece koşusu 22:30 UTC'de başlayıp gece yarısını geçtiği için her koşu iki "run day"
+  sayılıyordu: box'ta 18 UTC tarihi = 15 koşu, journal'da sayaç her Pazartesi +2 (Cuma koşusu
+  Cumartesi'ye taşıyor), eşik 3 fiilen 2 gecede tetikleniyordu; gece yarısından önce submit
+  eden koşunun sonraki yarısı da inert sayılıyordu. `session_date()` naive SQLite timestamp'i
+  UTC kabul eder (host-local değil). `inert_alert` dedup + "last broker ack" aynı tarihle.
+  Mutasyon (UTC'ye geri) 6 testi düşürüyor. **Box'ta:** inert 18→**15**, run_days 22, son ack
+  2026-10-13 (eskiden 10-14). State dosyası yoktu (push hiç teslim edilmedi) → geçiş etkisi yok.
+- [x] **7d2829a (prod, script):** `scripts/spend_report.py` + `monitoring/council_spend.py`
+  (pure, DB-only, SQLite `mode=ro`): nightly vs on-demand (order row'u olmayan karar = API),
+  run day/ticker/rating, broker submit başına maliyet, aylık run-rate, son submit'ten beri
+  harcama; `cost_usd` NULL = floor, asla $0. 18 test. **Box'ta 30 gün:** nightly **$539.02**,
+  22 koşu, ort. **$24.50/koşu**, run-rate **$514.52/ay**, **$269.51 / broker emri** (2 emir),
+  son emirden beri **$370.85 / 15 koşu**; Hold 196 council = $437.29 (%81), Underweight 40 =
+  $90.00, Overweight 6 = $13.96 (2'si broker'a gitti). **SPY her gece council'lanıyor:** 22 ×
+  ~$2.05 = $45.13/ay, hiç emre dönmemiş (universe = karar yolu → Canberk). 60 gün: $845.52+
+  (44 unmeasured, 09-13 öncesi), $140.92/emir (6 emir).
+- Suite 2443 pass / 2 fail = `test_dataflows_smoke` laptop Alpaca 401 (çıktıda 401 doğrulandı);
+  ruff temiz. Mobil değişiklik yok → OTA yok.
+- **Sıradaki:** (a) `/v1/diagnostics/spend` + mobil maliyet kartı (OTA) — rapor hazır, endpoint
+  aynı `report_payload`'ı döner; (b) weekly eval-report'a 7 günlük spend satırı; (c) Canberk
+  kararları: SPY'ı council universe'ünden çıkarmak ($45/ay), inert dönemde council maliyeti
+  ($24.5/koşu, 15 koşudur 0 emir) → cost-opt branch (`feat/cost-opt-adr006`) veya koşu sıklığı;
+  warm-bar-cache, ohlcv-settle/`COUNCIL_PARALLELISM`, alarm hedefi (#91), StockTwits, re-entry
+  cooldown değişmedi.
+
 ## Daily loop 2026-11-03 (prod-fusapp01 @78778fa, backend değişmedi; scorecard artık pencere istikrarını gösteriyor — OTA)
 - **Canlı durum** (box localhost, 16:26 UTC): eval 1M **NO-GO** 21/10 gün, Sharpe **−2.95**,
   Sortino −3.42, MaxDD −2.48%, Calmar −6.86, return −1.47% vs SPY −2.93% (`beats_spy` PASS).

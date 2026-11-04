@@ -27,6 +27,8 @@ def _report(
     inert_run_days: int = 5,
     by_reason: dict[str, int] | None = None,
     last_submitted: datetime | None = None,
+    # The 08-20 run's last row: the nightly run crosses midnight UTC, so this
+    # lands on 08-21 UTC but belongs to the 08-20 session.
     last_order: datetime | None = datetime(2026, 8, 21, 0, 39, tzinfo=UTC),
 ) -> ActionabilityReport:
     return ActionabilityReport(
@@ -52,7 +54,7 @@ def test_first_crossing_of_the_threshold_alerts():
     assert alert.kind == "inert"
     assert "3 run days" in alert.title
     assert alert.next_state.last_inert_run_days == 3
-    assert alert.next_state.last_run_date == "2026-08-21"
+    assert alert.next_state.last_run_date == "2026-08-20"
 
 
 def test_body_names_the_dominant_blocker_and_the_last_ack():
@@ -101,10 +103,39 @@ def test_same_run_day_does_not_alert_twice():
     assert decide(_report(inert_run_days=3), first.next_state) is None
 
 
+def test_the_same_run_seen_either_side_of_midnight_utc_alerts_once():
+    # One nightly run, the alerter invoked at 23:58 UTC (a hand-run mid-way)
+    # and again by the run's own tail at 00:41 UTC. Two UTC dates, one session.
+    # The blocker tally shifts as the last councils land, which on a NEW run
+    # day would be news — on the same run it is the same freeze, half-counted.
+    first = decide(
+        _report(inert_run_days=3, last_order=datetime(2026, 11, 3, 23, 58, tzinfo=UTC)),
+        AlertState(),
+    )
+    assert first is not None
+    assert first.next_state.last_run_date == "2026-11-03"
+    again = _report(
+        inert_run_days=3,
+        by_reason={"trimmed_to_zero_by_cash_cap": 95},
+        last_order=datetime(2026, 11, 4, 0, 41, tzinfo=UTC),
+    )
+    assert decide(again, first.next_state) is None
+
+
+def test_last_ack_names_the_session_not_the_utc_date():
+    # The live book's last ack: the 10-13 run submitted XOM at 00:27 UTC 10-14.
+    alert = decide(
+        _report(submitted=2, last_submitted=datetime(2026, 10, 14, 0, 27, tzinfo=UTC)),
+        AlertState(),
+    )
+    assert alert is not None
+    assert "last broker ack: 2026-10-13" in alert.body
+
+
 def test_one_deeper_run_day_is_not_news():
     state = AlertState(
         last_kind="inert",
-        last_run_date="2026-08-20",
+        last_run_date="2026-08-19",
         last_inert_run_days=5,
         last_dominant_reason="non-actionable rating=Hold",
     )
@@ -128,7 +159,7 @@ def test_a_new_dominant_blocker_re_alerts_at_the_same_depth():
     # "conviction that cannot be sized", which is a different bug to chase.
     state = AlertState(
         last_kind="inert",
-        last_run_date="2026-08-20",
+        last_run_date="2026-08-19",
         last_inert_run_days=6,
         last_dominant_reason="non-actionable rating=Hold",
     )
@@ -141,7 +172,7 @@ def test_window_sliding_the_count_down_does_not_re_alert():
     # inert_run_days can shrink as the window moves without the book thawing.
     state = AlertState(
         last_kind="inert",
-        last_run_date="2026-08-20",
+        last_run_date="2026-08-19",
         last_inert_run_days=9,
         last_dominant_reason="non-actionable rating=Hold",
     )
@@ -155,7 +186,7 @@ def test_window_sliding_the_count_down_does_not_re_alert():
 def test_recovery_alerts_once_after_a_reported_freeze():
     state = AlertState(
         last_kind="inert",
-        last_run_date="2026-08-20",
+        last_run_date="2026-08-19",
         last_inert_run_days=9,
         last_dominant_reason="non-actionable rating=Hold",
     )
@@ -173,7 +204,7 @@ def test_no_recovery_alert_when_the_freeze_was_never_reported():
 
 
 def test_a_second_freeze_after_recovery_alerts_again():
-    recovered = AlertState(last_kind="recovered", last_run_date="2026-08-20")
+    recovered = AlertState(last_kind="recovered", last_run_date="2026-08-19")
     alert = decide(_report(inert_run_days=3), recovered)
     assert alert is not None
     assert alert.kind == "inert"

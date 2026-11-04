@@ -32,7 +32,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from ..execution.actionability import ActionabilityReport
+from ..execution.actionability import ActionabilityReport, session_date
 
 # How much deeper the inertia must get before the same freeze pages again.
 # 3 -> 8 -> 13 run days: roughly weekly on a 5-day trading week, which is the
@@ -51,7 +51,7 @@ class AlertState:
     """
 
     last_kind: str | None = None          # "inert" | "recovered" | None (never alerted)
-    last_run_date: str | None = None      # ISO date of the report's newest order row
+    last_run_date: str | None = None      # ISO session date of the report's newest order row
     last_inert_run_days: int = 0
     last_dominant_reason: str | None = None
 
@@ -109,7 +109,9 @@ def decide(
         # No order rows: the run did not happen. Not this alert's subject.
         return None
 
-    run_date = report.last_order_at_utc.date() if report.last_order_at_utc else None
+    # The session the run was for, not the UTC date its last row landed on: a
+    # run that crosses midnight UTC is still one run day (see actionability).
+    run_date = report.last_run_date
 
     if verdict == "active":
         if state.last_kind != "inert":
@@ -168,9 +170,12 @@ def _recovered_body(report: ActionabilityReport) -> str:
 
 
 def _ack(value: datetime | None) -> str:
-    """Format the last ack as a bare UTC date, or say plainly that there is none.
+    """Format the last ack as its session date, or say plainly that there is none.
+
+    Session date, so the ack names the same run day the counter does: the
+    10-13 run's 00:27 UTC submit is "2026-10-13", not the next day.
 
     "never" rather than an empty slot: a window whose every order was refused is
     a different (worse) story than one whose last ack merely fell out of range.
     """
-    return value.date().isoformat() if value is not None else "never"
+    return session_date(value).isoformat() if value is not None else "never"

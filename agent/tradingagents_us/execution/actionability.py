@@ -19,9 +19,17 @@ order rows and answers three questions:
 
 `inert_run_days` counts DAYS THE AGENT RAN, not calendar days: weekends and
 holidays produce no rows at all, and counting them as inert would report a
-two-day inertia every Monday. A run day is any UTC date with at least one order
-row, which is exactly the definition the daily run creates — it persists a row
-per ticker whether or not the order was approved.
+two-day inertia every Monday. A run day is a New York session date with at
+least one order row — the daily run persists a row per ticker whether or not
+the order was approved.
+
+New York, not UTC: the nightly run starts at 22:30 UTC and its last councils
+land after midnight UTC, so a UTC date split every run into two "run days".
+Measured on the live book 2026-11-04: 18 UTC dates for 15 runs, the counter
+stepping +2 every Monday (Friday's run spilled into Saturday), and the
+three-run threshold firing after two. In New York time the same run ends
+around 20:00 on its own session date. A run would have to last past local
+midnight (5.5 h in summer, against a ~2 h norm) to be split again.
 """
 
 from __future__ import annotations
@@ -29,7 +37,8 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo
 
 # Reasons carry live numbers in a trailing parenthetical — e.g.
 # "trimmed_to_zero_by_cash_cap (spendable=$0.00)". Grouping on the raw string
@@ -42,6 +51,21 @@ _DETAIL_SUFFIX = re.compile(r"\s*\(.*\)\s*$")
 # Lives here, not in the route, so the API badge and the push alert cannot drift
 # into disagreeing about whether the book is frozen.
 INERT_THRESHOLD_RUN_DAYS = 3
+
+_EXCHANGE_TZ = ZoneInfo("America/New_York")
+
+
+def session_date(ts: datetime) -> date:
+    """The New York date a run-time timestamp belongs to.
+
+    A naive timestamp is UTC: SQLite hands the stored value back without its
+    zone, and `astimezone` on a naive value would read it as the HOST's local
+    time — UTC on the box, Istanbul on the laptop, two different answers from
+    one row.
+    """
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return ts.astimezone(_EXCHANGE_TZ).date()
 
 
 @dataclass(frozen=True)
@@ -73,6 +97,11 @@ class ActionabilityReport:
     last_order_at_utc: datetime | None = None
 
     @property
+    def last_run_date(self) -> date | None:
+        """Session date of the newest order row — the run this report describes."""
+        return session_date(self.last_order_at_utc) if self.last_order_at_utc else None
+
+    @property
     def dominant_reason(self) -> str | None:
         """The single reason blocking the most orders, or None if nothing was refused."""
         return next(iter(self.by_reason), None)
@@ -97,7 +126,7 @@ def normalize_reason(reason: str) -> str:
 
 
 def _run_date(order: OrderRecord) -> date:
-    return order.submitted_at_utc.date()
+    return session_date(order.submitted_at_utc)
 
 
 def build_report(orders: list[OrderRecord]) -> ActionabilityReport:

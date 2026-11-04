@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -10,6 +10,7 @@ from tradingagents_us.execution.actionability import (
     OrderRecord,
     build_report,
     normalize_reason,
+    session_date,
 )
 
 BASE = datetime(2026, 8, 3, 3, 0, tzinfo=UTC)  # a Monday
@@ -212,3 +213,95 @@ def test_the_live_2026_08_shape_reads_as_inert() -> None:
         "non-actionable rating=Hold",
     }
     assert report.last_submitted_at_utc is None
+
+
+# ------------------------- run day = New York session ------------------------
+#
+# The nightly run starts 22:30 UTC and its last councils land after midnight
+# UTC. Counted by UTC date, every run was two run days: the live counter read
+# 18 for 15 runs on 2026-11-04 and stepped +2 every Monday.
+
+
+def _night(session: datetime, *, broker_at: int | None = None) -> list[OrderRecord]:
+    """One nightly run for `session`: 11 rows, 22:30 UTC then every ~12 min.
+
+    Rows 0-6 land before midnight UTC, rows 7-10 after it — the live shape.
+    `broker_at` marks the row index that reached the broker, if any.
+    """
+    start = session.replace(hour=22, minute=30, tzinfo=UTC)
+    return [
+        OrderRecord(
+            ticker=f"T{i}",
+            side="BUY",
+            submitted_at_utc=start + timedelta(minutes=12 * i),
+            risk_approved=i == broker_at,
+            rejection_reasons=[] if i == broker_at else ["non-actionable rating=Hold"],
+            broker_order_id="ack" if i == broker_at else None,
+        )
+        for i in range(11)
+    ]
+
+
+def test_a_run_that_crosses_midnight_utc_is_one_run_day() -> None:
+    rows = _night(datetime(2026, 11, 3))
+    assert {r.submitted_at_utc.date() for r in rows} == {
+        datetime(2026, 11, 3).date(),
+        datetime(2026, 11, 4).date(),
+    }  # the fixture really does straddle midnight UTC
+    report = build_report(rows)
+    assert report.run_days == 1
+    assert report.inert_run_days == 1
+    assert report.last_run_date == date(2026, 11, 3)
+
+
+def test_a_pre_midnight_submit_covers_the_post_midnight_half_of_its_run() -> None:
+    # The run reached the broker at 23:42 UTC; its last four councils (all
+    # Hold) land after midnight. By UTC date that read as one inert day.
+    report = build_report(_night(datetime(2026, 10, 13), broker_at=6))
+    assert report.run_days == 1
+    assert report.inert_run_days == 0
+    assert report.verdict() == "active"
+
+
+def test_fridays_run_does_not_spill_into_saturday() -> None:
+    rows = _night(datetime(2026, 10, 30)) + _night(datetime(2026, 11, 2))  # Fri, Mon
+    report = build_report(rows)
+    assert report.run_days == 2
+    assert report.inert_run_days == 2
+
+
+def test_two_all_hold_runs_are_below_the_threshold_and_three_cross_it() -> None:
+    two = _night(datetime(2026, 11, 2)) + _night(datetime(2026, 11, 3))
+    assert build_report(two).inert_run_days == 2
+    assert build_report(two).verdict() == "active"  # UTC dating paged here (3 dates)
+    three = two + _night(datetime(2026, 11, 4))
+    assert build_report(three).verdict() == "inert"
+
+
+@pytest.mark.parametrize(
+    "utc,session",
+    [
+        (datetime(2026, 10, 14, 0, 27, tzinfo=UTC), date(2026, 10, 13)),  # EDT, -4h
+        (datetime(2026, 11, 4, 0, 41, tzinfo=UTC), date(2026, 11, 3)),  # EST, -5h
+        (datetime(2026, 11, 3, 22, 32, tzinfo=UTC), date(2026, 11, 3)),
+        (datetime(2026, 11, 4, 4, 59, tzinfo=UTC), date(2026, 11, 3)),  # 23:59 EST
+        (datetime(2026, 11, 4, 5, 0, tzinfo=UTC), date(2026, 11, 4)),
+    ],
+)
+def test_session_date_is_new_york_across_dst(utc: datetime, session: date) -> None:
+    assert session_date(utc) == session
+
+
+def test_naive_timestamps_are_utc_whatever_the_host_zone(monkeypatch) -> None:
+    # SQLite returns the stored value without its zone. Read as host-local, the
+    # laptop (UTC+3) and the box (UTC) would date the same row differently.
+    import time
+
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+    time.tzset()
+    try:
+        assert session_date(datetime(2026, 11, 4, 0, 41)) == date(2026, 11, 3)
+        assert session_date(datetime(2026, 11, 3, 16, 0)) == date(2026, 11, 3)
+    finally:
+        monkeypatch.undo()
+        time.tzset()

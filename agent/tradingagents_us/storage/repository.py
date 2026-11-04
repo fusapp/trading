@@ -344,6 +344,21 @@ class TradeLogRepository:
                 stmt = stmt.where(AgentDecisionRow.ticker == ticker)
             return list(s.execute(stmt).scalars().all())
 
+    def list_decisions_since(self, since: datetime) -> list[AgentDecisionRow]:
+        """Every decision from `since` on, oldest first, unlimited.
+
+        No limit on purpose: this feeds cost totals, and a cap that cut in
+        mid-window would understate the spend without saying so. A year is
+        ~2,800 rows.
+        """
+        with self.session() as s:
+            stmt = (
+                select(AgentDecisionRow)
+                .where(AgentDecisionRow.timestamp_utc >= since)
+                .order_by(AgentDecisionRow.timestamp_utc)
+            )
+            return list(s.execute(stmt).scalars().all())
+
     def list_orders_since(
         self, since: datetime | None = None, limit: int = 2000
     ) -> list[TradeOrderRow]:

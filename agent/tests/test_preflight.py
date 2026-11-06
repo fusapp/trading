@@ -56,6 +56,7 @@ def other_checks_pass(monkeypatch: pytest.MonkeyPatch, state_file: Path) -> None
     monkeypatch.setattr(preflight, "_check_fred", lambda: None)
     monkeypatch.setattr(preflight, "_check_stocktwits", lambda: "ok")
     monkeypatch.setattr(preflight, "_check_buy_gate_inputs", lambda failures: "ok")
+    monkeypatch.setattr(preflight, "_check_loss_streak", lambda failures: "ok")
 
 
 def _anthropic_refused(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -442,3 +443,91 @@ class TestBuyGateInputsAreReportedNotFailed:
     def test_default_universe_is_daily_runs(self) -> None:
         sh = (Path(preflight.__file__).parent / "daily_run.sh").read_text()
         assert f'UNIVERSE="${{UNIVERSE:-{preflight.DEFAULT_UNIVERSE}}}"' in sh
+
+
+_REAL_LOSS_STREAK_CHECK = preflight._check_loss_streak
+
+
+class TestLossStreakIsReportedNotFailed:
+    """The losing-streak breaker counts FIFO ledger rows. XOM's single stop-out on
+    2026-11-04 became five rows and shut every entry; each refused order only said
+    `consecutive_losses=5`. Preflight names what the five are, and never fails."""
+
+    @pytest.fixture
+    def db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+        url = f"sqlite:///{tmp_path / 'streak.db'}"
+        monkeypatch.setenv("DATABASE_URL", url)
+        monkeypatch.setattr(preflight, "_open_positions", lambda: 0)
+        return url
+
+    def _seed(self, url: str, rows: list[tuple[str, float, datetime]]) -> None:
+        from sqlalchemy import create_engine
+
+        from tradingagents_us.storage import TradeLogRepository
+        from tradingagents_us.storage.models import ClosedTradeRow
+
+        repo = TradeLogRepository(engine=create_engine(url, future=True))
+        now = datetime.now(UTC)
+        with repo.session() as s:
+            for i, (sym, pnl, closed) in enumerate(rows):
+                s.add(
+                    ClosedTradeRow(
+                        trade_id=f"t{i}", symbol=sym, direction="LONG", quantity=1.0,
+                        entry_price=100.0, exit_price=100.0 + pnl, realized_pnl=pnl,
+                        realized_pnl_pct=pnl / 100.0, holding_days=1.0,
+                        open_activity_id=f"o{i}", close_activity_id=f"c{i}",
+                        opened_at_utc=closed - timedelta(days=20), closed_at_utc=closed,
+                        reconciled_at_utc=now,
+                    )
+                )
+            s.commit()
+
+    def _live(self, url: str) -> None:
+        stop = datetime(2026, 11, 4, 14, 35, 20, tzinfo=UTC)
+        self._seed(
+            url,
+            [("XOM", p, stop - timedelta(seconds=i)) for i, p in
+             enumerate([-11.60, -8.85, -6.38, -9.36, -212.24])]
+            + [("AAPL", 41.57, datetime(2026, 11, 3, 14, 33, tzinfo=UTC))],
+        )
+
+    def test_the_live_halt_is_named(self, db: str) -> None:
+        self._live(db)
+        msg = preflight._check_loss_streak([])
+        assert msg.startswith("consecutive-loss breaker refuses every BUY: it counts 5 ")
+        assert "XOM 2026-11-04 -$248.43 over 5 lot(s)" in msg
+        assert "streak is 1" in msg
+        assert "book is flat" in msg
+        assert msg.endswith("(soft)")
+
+    def test_under_threshold_is_ok(self, db: str) -> None:
+        self._seed(db, [("XOM", -1.0, datetime(2026, 11, 4, 15, tzinfo=UTC))])
+        assert preflight._check_loss_streak([]) == "ok"
+
+    def test_an_empty_ledger_is_ok(self, db: str) -> None:
+        assert preflight._check_loss_streak([]) == "ok"
+
+    def test_a_failed_db_check_is_not_papered_over(self, tmp_path: Path, db: str) -> None:
+        msg = preflight._check_loss_streak([("db", "local.db does not exist")])
+        assert msg == "skipped: db check failed"
+        assert not (tmp_path / "streak.db").exists()
+
+    def test_unreadable_is_soft(self, db: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        from tradingagents_us.risk import market_inputs
+
+        def boom(*a, **k):
+            raise RuntimeError("disk I/O error")
+
+        monkeypatch.setattr(market_inputs, "recent_loss_streak", boom)
+        msg = preflight._check_loss_streak([])
+        assert msg == "loss-streak breaker could not be read: disk I/O error (soft)"
+
+    def test_a_tripped_breaker_never_fails_preflight(
+        self, other_checks_pass: None, fake_github: FakeGitHub, db: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._live(db)
+        monkeypatch.setenv("HEALTHCHECK_URL", HC)
+        monkeypatch.setattr(preflight, "_check_loss_streak", _REAL_LOSS_STREAK_CHECK)
+        assert preflight.main() == 0
+        assert fake_github.opened == []

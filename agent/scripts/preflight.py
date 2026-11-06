@@ -10,8 +10,8 @@ sends an ops alert (push AND a GitHub issue, see notifications.ops_channel)
 and exits 1 (visible in systemctl status); on success it exits 0 quietly.
 
 Hard checks: Alpaca (account + paper URL), Anthropic key, Polygon, Finnhub,
-OpenRouter (only when LLM_COUNCIL=1), DB writable, disk. FRED, StockTwits and
-the BUY gates' cached bars are warn-only.
+OpenRouter (only when LLM_COUNCIL=1), DB writable, disk. FRED, StockTwits,
+the BUY gates' cached bars and a tripped losing-streak breaker are warn-only.
 
 Alerting gaps (no HEALTHCHECK_URL; no GitHub alert token, or one GitHub
 refuses or that expires within days) are reported separately and do NOT set
@@ -238,6 +238,60 @@ def _check_buy_gate_inputs(failures: list[Failure]) -> str:
     return msg
 
 
+#: recent_loss_streak's own read depth, so the rows named are the rows counted.
+_LOSS_STREAK_READ = 50
+
+
+def _open_positions() -> int | None:
+    """How many positions the broker holds, or None if it cannot be asked."""
+    try:
+        from tradingagents_us.dataflows.alpaca_broker import AlpacaClient
+
+        with AlpacaClient() as ac:
+            return len(ac.list_positions())
+    except Exception:  # noqa: BLE001 — the report says "unknown" instead
+        return None
+
+
+def _check_loss_streak(failures: list[Failure]) -> str:
+    """Warn-only — say when the losing-streak breaker will refuse every BUY tonight.
+
+    The breaker counts losing realized-ledger rows, and a row is a FIFO lot, not
+    a trade: XOM's 2026-11-04 stop-out, one position, became five rows and shut
+    entries. Each refused order carries `consecutive_losses=N`, which reads as
+    five bad trades. This names the closing events behind N, and says when a
+    flat book means nothing can reset it. Reports what the gate does; never
+    changes it.
+
+    Skipped when the DB check failed, for the same reason as the BUY-gate check.
+    """
+    if any(name == "db" for name, _ in failures):
+        return "skipped: db check failed"
+    try:
+        from tradingagents_us.monitoring.loss_streak import describe_loss_streak
+        from tradingagents_us.risk.circuit_breaker import DEFAULT_MAX_CONSEC_LOSSES
+        from tradingagents_us.risk.market_inputs import recent_loss_streak
+        from tradingagents_us.storage.repository import TradeLogRepository
+
+        repo = TradeLogRepository()
+        streak = recent_loss_streak(repo=repo, limit=_LOSS_STREAK_READ)
+        msg = None
+        if streak >= DEFAULT_MAX_CONSEC_LOSSES:
+            msg = describe_loss_streak(
+                streak,
+                repo.list_closed_trades(limit=_LOSS_STREAK_READ),
+                threshold=DEFAULT_MAX_CONSEC_LOSSES,
+                open_positions=_open_positions(),
+            )
+    except Exception as exc:  # noqa: BLE001 — a report, never a failure
+        msg = f"loss-streak breaker could not be read: {exc}"
+    if msg is None:
+        return "ok"
+    msg = f"{msg} (soft)"
+    print(f"preflight: {msg}", file=sys.stderr)
+    return msg
+
+
 def _check_db(failures: list[Failure]) -> None:
     try:
         from sqlalchemy import text
@@ -382,6 +436,7 @@ def main() -> int:
     _check_db(failures)
     _check_disk(failures)
     _check_buy_gate_inputs(failures)
+    _check_loss_streak(failures)
 
     _record(failures, gaps)
     if gaps:

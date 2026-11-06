@@ -26,6 +26,11 @@ from dataclasses import dataclass
 
 from .kill_switch import KillSwitchReader
 
+#: Losing closes in a row before entries are refused. trade.py builds the
+#: breaker with the defaults, so this is the live threshold; preflight reads it
+#: from here to report against the same number.
+DEFAULT_MAX_CONSEC_LOSSES = 5
+
 
 @dataclass
 class BreakerState:
@@ -43,7 +48,7 @@ class CircuitBreaker:
         max_daily_dd: float = 0.03,
         vol_z_threshold: float = 3.0,
         max_api_err_rate: float = 0.20,
-        max_consec_losses: int = 5,
+        max_consec_losses: int = DEFAULT_MAX_CONSEC_LOSSES,
     ) -> None:
         self.kill_switch = kill_switch
         self.max_daily_dd = max_daily_dd

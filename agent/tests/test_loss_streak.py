@@ -102,31 +102,43 @@ class TestEventLossStreak:
         assert event_loss_streak([]) == 0
 
 
+# Five losing closes on five sessions, then a winner: what the breaker is for.
+FIVE_LOSING_CLOSES = LIVE_2026_11_06[:5] + [
+    Lot("MSFT", -40.0, datetime(2026, 11, 3, 15, 0)),
+    Lot("GOOGL", -30.0, datetime(2026, 10, 30, 15, 0)),
+    Lot("GOOGL", -5.0, datetime(2026, 10, 30, 14, 59)),
+    Lot("NVDA", -20.0, datetime(2026, 10, 29, 15, 0)),
+    Lot("V", -10.0, datetime(2026, 10, 28, 15, 0)),
+    Lot("AAPL", 41.57, datetime(2026, 10, 27, 14, 33, 56)),
+]
+
+
 class TestDescribe:
     def test_below_threshold_says_nothing(self) -> None:
-        assert describe_loss_streak(4, LIVE_2026_11_06, threshold=5, open_positions=0) is None
+        assert describe_loss_streak(4, FIVE_LOSING_CLOSES, threshold=5, open_positions=0) is None
 
-    def test_the_live_halt_is_named_for_what_it_is(self) -> None:
-        msg = describe_loss_streak(5, LIVE_2026_11_06, threshold=5, open_positions=0)
+    def test_a_halt_names_its_closing_events(self) -> None:
+        msg = describe_loss_streak(5, FIVE_LOSING_CLOSES, threshold=5, open_positions=0)
         assert msg is not None
-        assert "counts 5 losing ledger rows (threshold 5)" in msg
-        assert "1 closing event(s): XOM 2026-11-04 -$248.43 over 5 lot(s)" in msg
-        assert "counted by closing event the streak is 1" in msg
+        assert msg.startswith(
+            "consecutive-loss breaker refuses every BUY: 5 losing closing events in a row "
+            "(threshold 5): XOM 2026-11-04 -$248.43 over 5 lot(s), MSFT 2026-11-03 -$40.00 "
+            "over 1 lot(s), GOOGL 2026-10-30 -$35.00 over 2 lot(s), "
+        )
         assert "book is flat" in msg
 
-    def test_only_the_counted_rows_are_named(self) -> None:
-        # The breaker counted the newest 5; AAPL is past the first winner.
-        msg = describe_loss_streak(5, LIVE_2026_11_06, threshold=5, open_positions=0)
+    def test_only_the_counted_events_are_named(self) -> None:
+        msg = describe_loss_streak(5, FIVE_LOSING_CLOSES, threshold=5, open_positions=0)
         assert "AAPL" not in (msg or "")
 
     def test_open_book_can_still_reset(self) -> None:
-        msg = describe_loss_streak(5, LIVE_2026_11_06, threshold=5, open_positions=2)
+        msg = describe_loss_streak(5, FIVE_LOSING_CLOSES, threshold=5, open_positions=2)
         assert msg is not None
         assert "resets on the next winning close (2 position(s) open)" in msg
         assert "flat" not in msg
 
     def test_unknown_positions_are_said_unknown(self) -> None:
-        msg = describe_loss_streak(5, LIVE_2026_11_06, threshold=5, open_positions=None)
+        msg = describe_loss_streak(5, FIVE_LOSING_CLOSES, threshold=5, open_positions=None)
         assert msg is not None and msg.endswith("open positions unknown")
 
 

@@ -141,6 +141,43 @@ class TestRecentLossStreak:
         _seed_trades(repo, [-1.0] * 6)
         assert recent_loss_streak(repo=repo) == 6
 
+    def test_one_stop_out_in_many_lots_is_one_loss(self, tmp_path) -> None:
+        """2026-11-04: XOM 68 (four entry fills) stopped out in two fills; the
+        FIFO ledger wrote five losing rows and the breaker, counting rows, shut
+        every entry on a -$248 loss with nothing left to reset it."""
+        from tradingagents_us.risk.circuit_breaker import DEFAULT_MAX_CONSEC_LOSSES
+        from tradingagents_us.risk.market_inputs import recent_loss_streak
+
+        repo = _repo(tmp_path)
+        stop = datetime(2026, 11, 4, 14, 35, 20, tzinfo=UTC)
+        rows = [(-11.60, 0), (-8.85, 0), (-6.38, 0), (-9.36, 0), (-212.24, 50)]
+        with repo.session() as s:
+            for i, (pnl, secs_before) in enumerate(rows):
+                s.add(
+                    ClosedTradeRow(
+                        trade_id=f"x{i}", symbol="XOM", direction="LONG", quantity=1.0,
+                        entry_price=175.0, exit_price=175.0 + pnl, realized_pnl=pnl,
+                        realized_pnl_pct=pnl / 175.0, holding_days=21.0,
+                        open_activity_id=f"o{i}", close_activity_id=f"c{i}",
+                        opened_at_utc=stop - timedelta(days=21),
+                        closed_at_utc=stop - timedelta(seconds=secs_before),
+                        reconciled_at_utc=stop,
+                    )
+                )
+            s.add(
+                ClosedTradeRow(
+                    trade_id="win", symbol="AAPL", direction="LONG", quantity=1.0,
+                    entry_price=285.0, exit_price=326.0, realized_pnl=41.0,
+                    realized_pnl_pct=0.14, holding_days=130.0,
+                    open_activity_id="ow", close_activity_id="cw",
+                    opened_at_utc=stop - timedelta(days=131),
+                    closed_at_utc=stop - timedelta(days=1), reconciled_at_utc=stop,
+                )
+            )
+            s.commit()
+        assert recent_loss_streak(repo=repo) == 1
+        assert recent_loss_streak(repo=repo) < DEFAULT_MAX_CONSEC_LOSSES
+
 
 class TestGateInputs:
     """The BUY gates read a cache only the prices route writes. When it went

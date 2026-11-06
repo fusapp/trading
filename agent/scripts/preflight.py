@@ -238,8 +238,8 @@ def _check_buy_gate_inputs(failures: list[Failure]) -> str:
     return msg
 
 
-#: recent_loss_streak's own read depth, so the rows named are the rows counted.
-_LOSS_STREAK_READ = 50
+#: recent_loss_streak's own read depth, so the events named are the ones counted.
+_LOSS_STREAK_READ = 200
 
 
 def _open_positions() -> int | None:
@@ -256,12 +256,10 @@ def _open_positions() -> int | None:
 def _check_loss_streak(failures: list[Failure]) -> str:
     """Warn-only — say when the losing-streak breaker will refuse every BUY tonight.
 
-    The breaker counts losing realized-ledger rows, and a row is a FIFO lot, not
-    a trade: XOM's 2026-11-04 stop-out, one position, became five rows and shut
-    entries. Each refused order carries `consecutive_losses=N`, which reads as
-    five bad trades. This names the closing events behind N, and says when a
-    flat book means nothing can reset it. Reports what the gate does; never
-    changes it.
+    Each refused order carries only `consecutive_losses=N`. This names the
+    closing events behind N, and says when a flat book means nothing can reset
+    it: the count clears only at a winning close, and a flat book has nothing to
+    close. Reports what the gate does; never changes it.
 
     Skipped when the DB check failed, for the same reason as the BUY-gate check.
     """

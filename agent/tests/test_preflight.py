@@ -449,9 +449,9 @@ _REAL_LOSS_STREAK_CHECK = preflight._check_loss_streak
 
 
 class TestLossStreakIsReportedNotFailed:
-    """The losing-streak breaker counts FIFO ledger rows. XOM's single stop-out on
-    2026-11-04 became five rows and shut every entry; each refused order only said
-    `consecutive_losses=5`. Preflight names what the five are, and never fails."""
+    """Each refused order only says `consecutive_losses=N`. Preflight names the
+    closing events behind N, says when a flat book cannot reset it, and never
+    fails over it."""
 
     @pytest.fixture
     def db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
@@ -482,21 +482,52 @@ class TestLossStreakIsReportedNotFailed:
                 )
             s.commit()
 
+    def _seed_more(self, url: str, rows: list[tuple[str, float, int]]) -> None:
+        from sqlalchemy import create_engine
+
+        from tradingagents_us.storage import TradeLogRepository
+        from tradingagents_us.storage.models import ClosedTradeRow
+
+        repo = TradeLogRepository(engine=create_engine(url, future=True))
+        stop = datetime(2026, 11, 4, 15, tzinfo=UTC)
+        with repo.session() as s:
+            for sym, pnl, days in rows:
+                closed = stop - timedelta(days=days)
+                s.add(
+                    ClosedTradeRow(
+                        trade_id=f"m-{sym}", symbol=sym, direction="LONG", quantity=1.0,
+                        entry_price=100.0, exit_price=100.0 + pnl, realized_pnl=pnl,
+                        realized_pnl_pct=pnl / 100.0, holding_days=1.0,
+                        open_activity_id=f"mo-{sym}", close_activity_id=f"mc-{sym}",
+                        opened_at_utc=closed - timedelta(days=20), closed_at_utc=closed,
+                        reconciled_at_utc=stop,
+                    )
+                )
+            s.commit()
+
     def _live(self, url: str) -> None:
         stop = datetime(2026, 11, 4, 14, 35, 20, tzinfo=UTC)
         self._seed(
             url,
             [("XOM", p, stop - timedelta(seconds=i)) for i, p in
              enumerate([-11.60, -8.85, -6.38, -9.36, -212.24])]
-            + [("AAPL", 41.57, datetime(2026, 11, 3, 14, 33, tzinfo=UTC))],
+            + [("AAPL", 41.57, datetime(2026, 10, 20, 14, 33, tzinfo=UTC))],
         )
 
-    def test_the_live_halt_is_named(self, db: str) -> None:
+    def test_the_live_ledger_no_longer_trips(self, db: str) -> None:
+        # One stop-out in five lots is one losing close, not five.
         self._live(db)
+        assert preflight._check_loss_streak([]) == "ok"
+
+    def test_five_losing_closes_are_named(self, db: str) -> None:
+        self._live(db)
+        self._seed_more(db, [("MSFT", -40.0, 1), ("GOOGL", -30.0, 4), ("NVDA", -20.0, 5),
+                             ("V", -10.0, 6)])
         msg = preflight._check_loss_streak([])
-        assert msg.startswith("consecutive-loss breaker refuses every BUY: it counts 5 ")
+        assert msg.startswith(
+            "consecutive-loss breaker refuses every BUY: 5 losing closing events in a row"
+        )
         assert "XOM 2026-11-04 -$248.43 over 5 lot(s)" in msg
-        assert "streak is 1" in msg
         assert "book is flat" in msg
         assert msg.endswith("(soft)")
 
@@ -527,6 +558,9 @@ class TestLossStreakIsReportedNotFailed:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         self._live(db)
+        self._seed_more(db, [("MSFT", -40.0, 1), ("GOOGL", -30.0, 4), ("NVDA", -20.0, 5),
+                             ("V", -10.0, 6)])
+        assert _REAL_LOSS_STREAK_CHECK([]).startswith("consecutive-loss breaker refuses")
         monkeypatch.setenv("HEALTHCHECK_URL", HC)
         monkeypatch.setattr(preflight, "_check_loss_streak", _REAL_LOSS_STREAK_CHECK)
         assert preflight.main() == 0

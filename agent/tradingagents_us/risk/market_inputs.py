@@ -18,6 +18,7 @@ import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
 
+from ..monitoring.loss_streak import closing_events, event_loss_streak
 from ..storage import price_cache
 from ..storage.repository import TradeLogRepository
 
@@ -176,9 +177,9 @@ def rolling_price_stats(
 def recent_loss_streak(
     *,
     repo: TradeLogRepository | None = None,
-    limit: int = 50,
+    limit: int = 200,
 ) -> int:
-    """How many round trips in a row have closed at a loss.
+    """How many closing events in a row have lost money.
 
     The breaker's consecutive-loss check counts what `record_trade_result` was
     told, and nothing ever called it — the counter sat at zero from process
@@ -186,19 +187,20 @@ def recent_loss_streak(
     ledger already knows the answer: it is the FIFO-matched close list the app's
     "Gerçekleşen" card reads.
 
+    But a ledger row is a FIFO lot, not a trade. Counting rows read one stop-out
+    as five losses on 2026-11-04 (XOM 68: four entry fills, two exit fills),
+    tripped the breaker on -$248, and with the book flat nothing could ever
+    reset it. Rows are grouped into closing events first — one symbol, one New
+    York session, net P&L — and those are what is counted.
+
     Counted from the most recent close backwards, stopping at the first winner.
-    A break-even trade (net exactly zero) counts as a winner: it did not lose,
+    A break-even close (net exactly zero) counts as a winner: it did not lose,
     and treating "no move" as a loss would halt the book for a flat week.
+    `limit` is in rows; one event can span several, hence the deeper read.
     """
     repo = repo or TradeLogRepository()
-    trades = repo.list_closed_trades(limit=limit)
-    streak = 0
-    # `list_closed_trades` returns newest first; walk until something worked.
-    for t in trades:
-        if (t.realized_pnl or 0.0) >= 0:
-            break
-        streak += 1
-    return streak
+    # `list_closed_trades` returns newest first; events keep that order.
+    return event_loss_streak(closing_events(repo.list_closed_trades(limit=limit)))
 
 
 @dataclass(frozen=True)

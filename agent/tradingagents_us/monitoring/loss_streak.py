@@ -12,9 +12,9 @@ It also cannot clear itself. The count resets only at a winning close, a close
 needs an open position, and with entries refused and the book flat there is
 nothing to close.
 
-This module puts the breaker's own row count next to the same rows grouped
-into closing events (one symbol, one New York session), so preflight can say
-what a halt is made of. It does not change the count. Pure: no DB, no clock,
+This module groups ledger rows into closing events (one symbol, one New York
+session, net P&L). `recent_loss_streak` counts those, not rows, and preflight
+uses the same grouping to name what a halt is made of. Pure: no DB, no clock,
 no network.
 """
 
@@ -81,7 +81,7 @@ def _usd(x: float) -> str:
 
 
 def describe_loss_streak(
-    row_streak: int,
+    streak: int,
     trades: Sequence[ClosedLot],
     *,
     threshold: int,
@@ -89,23 +89,21 @@ def describe_loss_streak(
 ) -> str | None:
     """One line on a tripped breaker, or None while it lets entries through.
 
-    `row_streak` is the breaker's own count (`recent_loss_streak`), passed in
-    rather than recomputed so this report cannot disagree with the gate. The
-    rows it counted are the newest `row_streak` of `trades`, which must be the
-    ledger read newest first.
+    `streak` is the breaker's own count (`recent_loss_streak`, in closing
+    events), passed in rather than recomputed so this report cannot disagree
+    with the gate. The events it counted are the newest `streak` closing events
+    of `trades`, which must be the ledger read newest first.
     """
-    if row_streak < threshold:
+    if streak < threshold:
         return None
-    counted = closing_events(trades[:row_streak])
+    counted = closing_events(trades)[:streak]
     named = ", ".join(
         f"{e.symbol} {e.session.isoformat()} {_usd(e.net_pnl)} over {e.lots} lot(s)"
         for e in counted
     )
     msg = (
-        f"consecutive-loss breaker refuses every BUY: it counts {row_streak} losing "
-        f"ledger rows (threshold {threshold}), which are {len(counted)} closing "
-        f"event(s): {named}; counted by closing event the streak is "
-        f"{event_loss_streak(closing_events(trades))}"
+        f"consecutive-loss breaker refuses every BUY: {streak} losing closing events "
+        f"in a row (threshold {threshold}): {named}"
     )
     if open_positions == 0:
         msg += "; the book is flat, so no close can reset it and it stays shut until someone acts"

@@ -1335,6 +1335,34 @@ Eval is CLOSED: decision-path changes now allowed on main, but each HIGH-blast i
   çoklu stop'ta en yüksek; order book hatası snapshot'ı düşürmez. 6 yeni test, suite 1833 pass /
   2 fail = laptop ölü Alpaca key (401). Box'a DEPLOY EDİLMEDİ (prod pull #52 kararına bağlı).
 
+## Daily loop 2026-11-06 (prod-fusapp01 @09b4186 → dabb9d3; kitap flat, losing-streak breaker tek stop'la KİLİTLENDİ)
+- **Canlı durum** (box localhost, 07:26 UTC): eval 1M **NO-GO** 23/10 gün, Sharpe **−4.12**,
+  Sortino −4.63, MaxDD −3.32%, return −2.32% vs SPY −1.04% (`beats_spy` FAIL); stability 3/10,
+  4 flip. 3M **NO-GO** 65 gün, Sharpe −0.21, MaxDD −3.32%, +0.45% vs SPY −0.14%; 7/10, 1 flip.
+  Equity **$109,803.05**, **0 pozisyon, %100 nakit**. Alpaca son bar 11-04.
+- **XOM 68 stop'la kapandı 11-04 14:34–14:35 UTC** (171.25 / 171.92), net **−$248.43**. 10-14'teki
+  tek market BUY 4 partial fill ile dolmuştu, çıkış 2 fill → FIFO ledger'da **5 kayıp satırı**.
+- **🔴 Breaker kilidi:** `recent_loss_streak` ledger SATIRI sayıyor → 1 round trip = "5 ardışık
+  kayıp" → `consecutive_losses=5` ≥ 5 → 11-04 gecesinden beri **her BUY reddediliyor**. 11-04 gece
+  **JPM Overweight BUY 24 hisse ($8,244, %7.5)** sadece bu sebeple reddedildi. Sayaç yalnız kârlı
+  bir kapanışla sıfırlanıyor; kitap flat + BUY yasak → **kendiliğinden ASLA açılmaz** (latch).
+  Bu arada council'lar koşmaya devam: 3 günde $77.11, 0 emir.
+- [x] **dabb9d3 (prod, warn-only):** `monitoring/loss_streak.py` (pure: ledger satırı → closing
+  event = sembol × NY seansı, net P&L) + preflight `_check_loss_streak`: breaker'ın kendi sayısı,
+  arkasındaki event'ler, event bazında streak, flat kitap → "kendiliğinden açılmaz". Gate
+  DEĞİŞMEDİ; eşik `DEFAULT_MAX_CONSEC_LOSSES` sabitine alındı (davranış aynı). Box'ta canlı çıktı:
+  `5 losing ledger rows … 1 closing event(s): XOM 2026-11-04 -$248.43 over 5 lot(s); … streak is 1;
+  the book is flat …`. API restart yok (preflight timer'ı yeni süreçte okur).
+- [x] **Branch `fix/loss-streak-by-closing-event` (push, MERGE/DEPLOY YOK — karar yolu):**
+  `recent_loss_streak` closing event sayar (limit 50→200 satır). Canlı ledger'da streak 5→**1**
+  → breaker açılır, bir sonraki gece BUY'lar normal gate'lerden geçer. Canberk kararı.
+- **Açık tasarım sorusu (Canberk):** gerçek 5 ardışık kayıpta da latch aynı — flat kitapta reset
+  yolu yok, kill switch'te reset yok, alarm kanalı yok (#91). Seçenekler: (a) zaman bazlı soğuma
+  (N seans sonra sıfırla), (b) API/mobil "breaker reset" (operator), (c) streak'i son N günle
+  sınırla. Ayrıca breaker kapalıyken council'ı atlamak ~$25/gece kurtarır (karar yolu → branch).
+- Suite 2463 pass / 2 fail = `test_dataflows_smoke` laptop Alpaca 401 (çıktıda 401 doğrulandı).
+  Mobil değişiklik yok → OTA yok (app "Emir akışı" kartı zaten "Üst üste zarar (5)" gösteriyor).
+
 ## Daily loop 2026-11-04 (prod-fusapp01 @78778fa → 7d2829a; inert sayacı koşuyu ikiye bölüyormuş + council harcaması ilk kez toplandı)
 - **Canlı durum** (box localhost, 06:13 UTC): eval 1M **NO-GO** 21/10 gün, Sharpe **−2.96**,
   Sortino −3.43, MaxDD −2.48%, return −1.47% vs SPY −2.93% (`beats_spy` PASS); stability 5/10,

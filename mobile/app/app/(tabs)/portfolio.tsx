@@ -31,6 +31,7 @@ import {
   useConcentration,
   useTrades,
   useActionability,
+  useCouncilSpend,
   useReadiness,
 } from '@/api/hooks';
 import type { EvalResult, Position } from '@/api/types';
@@ -84,6 +85,7 @@ import {
   verdictQualifier,
   type ActionabilityTone,
 } from '@/utils/actionability';
+import { spendFigures } from '@/utils/spend';
 
 // Tone -> colour is palette-dependent: in Modernist a gain is the ink colour,
 // so these cannot be module constants.
@@ -185,6 +187,7 @@ export default function PortfolioScreen() {
   const { data: concentration } = useConcentration();
   const { data: realized } = useTrades();
   const { data: flow } = useActionability();
+  const { data: spend } = useCouncilSpend();
   const { data: readiness } = useReadiness();
   const queryClient = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
@@ -197,6 +200,7 @@ export default function PortfolioScreen() {
     await queryClient.invalidateQueries({ queryKey: ['prices', 'SPY'] });
     await queryClient.invalidateQueries({ queryKey: ['trades'] });
     await queryClient.invalidateQueries({ queryKey: ['diagnostics', 'actionability'] });
+    await queryClient.invalidateQueries({ queryKey: ['diagnostics', 'spend'] });
     setRefreshing(false);
   }, [queryClient]);
 
@@ -370,6 +374,9 @@ export default function PortfolioScreen() {
           const rate = submitRate(flow);
           const reasons = topReasons(flow.by_reason);
           const note = inertiaNote(flow);
+          // What the nights cost. Null until the endpoint answers (or on an
+          // older backend), and then the row is simply absent.
+          const cost = spendFigures(spend);
           return (
             <Card style={styles.card}>
               <View style={styles.cardHead}>
@@ -424,6 +431,40 @@ export default function PortfolioScreen() {
                   </View>
                 </View>
               ))}
+
+              {cost ? (
+                <View style={styles.spendBlock}>
+                  <Text style={styles.exitHead}>Council maliyeti</Text>
+                  <View style={styles.grid}>
+                    <StatCell
+                      style={styles.gridCell}
+                      size="sm"
+                      label={tr('stat.perRun')}
+                      value={cost.perRun.value}
+                      hint={cost.perRun.hint}
+                    />
+                    <StatCell
+                      style={styles.gridCell}
+                      size="sm"
+                      label={tr('stat.perSubmit')}
+                      value={cost.perSubmit.value}
+                      hint={cost.perSubmit.hint}
+                    />
+                    <StatCell
+                      style={styles.gridCell}
+                      size="sm"
+                      label={tr('stat.sinceSubmit')}
+                      value={cost.sinceSubmit.value}
+                      hint={cost.sinceSubmit.hint}
+                      // Whether this money was wasted is the order-flow
+                      // verdict's call, not a second threshold here.
+                      valueColor={meta.tone === 'warning' ? FLOW_TONE_COLORS[meta.tone] : undefined}
+                    />
+                  </View>
+                  {cost.runRate ? <Text style={styles.meta}>{cost.runRate}</Text> : null}
+                  {cost.floorNote ? <Text style={styles.meta}>{cost.floorNote}</Text> : null}
+                </View>
+              ) : null}
 
               {note ? <Text style={styles.flagText}>⚠︎ {note}</Text> : null}
             </Card>
@@ -1081,6 +1122,12 @@ const makeStyles = (t: Palette, sh: Shape) =>
 
     // The prototype's three-up figure grid.
     grid: { flexDirection: 'row', gap: sh.space[1], marginTop: sh.space[2] },
+    spendBlock: {
+      marginTop: sh.space[3],
+      paddingTop: sh.space[2],
+      borderTopWidth: sh.hairline,
+      borderTopColor: t.line ?? t.divider,
+    },
     gridCell: { flex: 1 },
 
     // ── Chart card ────────────────────────────────────────────

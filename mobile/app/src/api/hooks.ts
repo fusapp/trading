@@ -69,6 +69,21 @@ export function useActionability(days = 30) {
   });
 }
 
+/**
+ * Council spend. Also changes at most once per nightly run, so the same slow
+ * cadence and the same "a failure hides the row, never the screen" contract.
+ * A backend older than the endpoint answers 404 and the row simply is not drawn.
+ */
+export function useCouncilSpend(days = 30) {
+  return useQuery({
+    queryKey: ['diagnostics', 'spend', days],
+    queryFn: () => api.getCouncilSpend(days),
+    refetchInterval: REFETCH_INTERVAL_MS * 6,
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
 export function useDecisions(
   params?: { ticker?: string; limit?: number },
   options?: { enabled?: boolean },

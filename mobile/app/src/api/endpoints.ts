@@ -5,6 +5,7 @@
 import { apiClient } from './client';
 import type {
   Actionability,
+  CouncilSpend,
   AgentDecision,
   AuditLog,
   AnalyzeJob,
@@ -57,6 +58,10 @@ export const api = {
   // exactly when a broker outage is the thing being diagnosed.
   getActionability: (days = 30) =>
     apiClient.get(`v1/diagnostics/actionability?days=${days}`).json<Actionability>(),
+
+  // What the councils cost and how much of it reached the broker. DB-only.
+  getCouncilSpend: (days = 30) =>
+    apiClient.get(`v1/diagnostics/spend?days=${days}`).json<CouncilSpend>(),
 
   // Agents
   listDecisions: (params?: { ticker?: string; limit?: number }) => {

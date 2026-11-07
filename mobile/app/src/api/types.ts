@@ -438,6 +438,39 @@ export interface Actionability {
   last_order_at_utc: string | null;
 }
 
+/** One slice of GET /v1/diagnostics/spend. `is_floor` = some council was never metered. */
+export interface SpendBucket {
+  councils: number;
+  spend_usd: number;
+  unmeasured: number;
+  is_floor: boolean;
+  broker_submits: number;
+}
+
+/**
+ * GET /v1/diagnostics/spend — what the councils cost and what it bought.
+ * Same builder as `python -m scripts.spend_report --json` on the box.
+ */
+export interface CouncilSpend {
+  window_days: number;
+  total: SpendBucket;
+  /** Nightly run (has an order row) vs on demand (Ask / analyze). */
+  scheduled: SpendBucket;
+  on_demand: SpendBucket;
+  run_days: number;
+  mean_per_run_day_usd: number | null;
+  monthly_run_rate_usd: number | null;
+  /** Null when nothing reached the broker — never $0. */
+  spend_per_submit_usd: number | null;
+  /** NY session (YYYY-MM-DD) of the last broker-acknowledged order. */
+  last_submit_session: string | null;
+  since_last_submit: SpendBucket;
+  run_days_since_last_submit: number;
+  by_run_day: Record<string, SpendBucket>;
+  by_ticker: Record<string, SpendBucket>;
+  by_rating: Record<string, SpendBucket>;
+}
+
 /** One row of the market board. */
 export interface Mover {
   ticker: string;

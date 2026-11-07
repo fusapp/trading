@@ -1335,6 +1335,31 @@ Eval is CLOSED: decision-path changes now allowed on main, but each HIGH-blast i
   çoklu stop'ta en yüksek; order book hatası snapshot'ı düşürmez. 6 yeni test, suite 1833 pass /
   2 fail = laptop ölü Alpaca key (401). Box'a DEPLOY EDİLMEDİ (prod pull #52 kararına bağlı).
 
+## Daily loop 2026-11-07 (prod-fusapp01 @0674a7f → spend endpoint; breaker latch'in faturası artık telefonda)
+- **Canlı durum** (box localhost, 07:18 UTC): eval 1M **NO-GO** 23/10 gün, Sharpe **−4.54**,
+  Sortino −5.04, MaxDD −3.32%, return −2.55% vs SPY −5.92% (`beats_spy` PASS); stability 3/10,
+  3 flip. 3M **NO-GO** 65 gün, Sharpe −0.26, MaxDD −3.32%, +0.31% vs SPY −4.38%; 6/10, 1 flip.
+  Equity **$109,803.05**, **0 pozisyon, %100 nakit** (11-04 XOM stop'tan beri).
+- **11-06 gece koşusu:** exit 0, 11 council, hepsi `consecutive_losses=5` ile REJECTED (+ Hold/
+  Underweight); ~$2.2–2.4/council. Breaker latch 3. gece. Inert 18 run-day, 2/242 submit, son
+  broker ack 10-13. Fix branch `fix/loss-streak-by-closing-event` hâlâ Canberk kararında.
+- **Box spend (30g, `scripts.spend_report`):** nightly $544.02 / 22 koşu, ort. **$24.73/koşu**,
+  run-rate **$519/ay**, **$272 / broker emri**, son emirden (10-13) beri **$447.74 / 18 koşu**.
+- [x] **`GET /v1/diagnostics/spend?days=N` (prod, API restart):** `scripts.spend_report.collect` +
+  `council_spend.report_payload` aynen → telefon ve box aynı builder'ı okur. Pydantic şema,
+  DB-only, read-only, karar yolunda değil. 4 API testi (boş pencere, streak fiyatı + floor +
+  on-demand ayrımı, pencere dışı eski ack, days sınırı).
+- [x] **Mobil "Emir akışı" kartı → "Council maliyeti" satırı (OTA preview):** Koşu başına /
+  Emir başına / Emirsiz harcama + "Bu hızla ayda ~$X" + ölçülmemiş council notu. `utils/spend.ts`
+  (pure; NULL cost = floor '+', emir yoksa "—" asla $0; ton actionability verdict'inden — ikinci
+  eşik yok). 6 jest, i18n `stat.perRun/perSubmit/sinceSubmit` (tr+en). Eski backend 404 → satır yok.
+- Suite **2467 pass / 2 fail** = `test_dataflows_smoke` laptop Alpaca 401 (çıktıda 401 doğrulandı);
+  ruff temiz; jest 429/429; tsc 0 hata. NOT: suite wall-clock 4 saati buldu çünkü Mac maintenance
+  sleep'e giriyor (CPU time 15 dk) — `test_time_exit_model` "asılı" sanma, `ps -o time` ile bak.
+- **Sıradaki / Canberk kararları:** breaker fix branch merge + latch tasarımı (soğuma/reset);
+  breaker kapalıyken council atlama (~$25/gece, karar yolu → branch); SPY universe ($45/ay);
+  warm-bar-cache, ohlcv-settle, alarm hedefi (#91), StockTwits.
+
 ## Daily loop 2026-11-06 (prod-fusapp01 @09b4186 → dabb9d3; kitap flat, losing-streak breaker tek stop'la KİLİTLENDİ)
 - **Canlı durum** (box localhost, 07:26 UTC): eval 1M **NO-GO** 23/10 gün, Sharpe **−4.12**,
   Sortino −4.63, MaxDD −3.32%, return −2.32% vs SPY −1.04% (`beats_spy` FAIL); stability 3/10,

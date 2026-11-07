@@ -6,6 +6,10 @@ disagree: a fully-invested basket that no longer passes its own sizing caps
 keeps posting the tape's Sharpe while submitting nothing, and every metric on
 the scorecard is computed from equity, which a frozen book still has.
 
+`/spend` prices the same question: what the councils cost over the window and
+how much of it bought an order that reached the broker. A book that cannot act
+still pays for a full council on every ticker every night.
+
 Read-only, DB-only, off the decision path. No broker call: a diagnostic that
 depends on Alpaca reports "unreachable" exactly when a broker outage is the
 thing you are trying to diagnose.
@@ -18,11 +22,14 @@ from datetime import UTC, datetime, timedelta
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
+from scripts.spend_report import collect as collect_councils
 from tradingagents_us.execution.actionability import (
     INERT_THRESHOLD_RUN_DAYS,
     OrderRecord,
     build_report,
 )
+from tradingagents_us.monitoring.council_spend import build_report as build_spend_report
+from tradingagents_us.monitoring.council_spend import report_payload as spend_payload
 from tradingagents_us.storage import TradeLogRepository
 
 from ..deps import get_repo, require_token
@@ -99,6 +106,55 @@ async def actionability(
         first_order_at_utc=report.first_order_at_utc,
         last_order_at_utc=report.last_order_at_utc,
     )
+
+
+class SpendBucket(BaseModel):
+    councils: int
+    spend_usd: float
+    # Councils whose cost was never metered. Any bucket with one is a floor.
+    unmeasured: int
+    is_floor: bool
+    broker_submits: int
+
+
+class SpendResponse(BaseModel):
+    """What the councils cost, and what that money bought.
+
+    Same numbers as `python -m scripts.spend_report --json` — one builder, so
+    the phone and the box cannot disagree. Definitions live in
+    `tradingagents_us/monitoring/council_spend.py`.
+    """
+
+    window_days: int
+    total: SpendBucket
+    # Nightly run (the council has an order row) vs on demand (Ask / analyze).
+    scheduled: SpendBucket
+    on_demand: SpendBucket
+    run_days: int
+    mean_per_run_day_usd: float | None
+    monthly_run_rate_usd: float | None
+    # None when nothing in the window reached the broker — never a division by zero.
+    spend_per_submit_usd: float | None
+    # New York session date (YYYY-MM-DD) of the last broker-acknowledged order.
+    last_submit_session: str | None
+    # Nightly spend on run days after that session: the inert streak in dollars.
+    since_last_submit: SpendBucket
+    run_days_since_last_submit: int
+    by_run_day: dict[str, SpendBucket]
+    by_ticker: dict[str, SpendBucket]
+    by_rating: dict[str, SpendBucket]
+
+
+@router.get("/spend", response_model=SpendResponse)
+async def spend(
+    user: str = Depends(require_token),
+    repo: TradeLogRepository = Depends(get_repo),
+    days: int = Query(30, ge=1, le=365, description="lookback window in calendar days"),
+) -> SpendResponse:
+    """Council spend over the last `days`, and how much of it reached the broker."""
+    since = datetime.now(UTC) - timedelta(days=days)
+    report = build_spend_report(collect_councils(repo, since))
+    return SpendResponse(window_days=days, **spend_payload(report))
 
 
 def _as_reasons(raw: object) -> list[str]:

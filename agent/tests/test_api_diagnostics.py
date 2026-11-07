@@ -170,3 +170,122 @@ class TestActionability:
     def test_days_param_is_bounded(self, client: TestClient) -> None:
         assert client.get("/v1/diagnostics/actionability", params={"days": 0}).status_code == 422
         assert client.get("/v1/diagnostics/actionability", params={"days": 999}).status_code == 422
+
+
+def _council(
+    repo: TradeLogRepository,
+    *,
+    key: str,
+    ticker: str,
+    days_ago: float,
+    cost: float | None,
+    rating: str = "Hold",
+    nightly: bool = True,
+    broker_id: str | None = None,
+) -> datetime:
+    """One council: a costed decision, plus the order row the nightly run writes."""
+    ts = _now() - timedelta(days=days_ago)
+    repo.save_decision(
+        AgentDecision(
+            decision_id=f"d-{key}",
+            ticker=ticker,
+            market="US",
+            quote_currency="USD",
+            rating=rating,
+            reasoning=[],
+            timestamp_utc=ts,
+            cost_usd=cost,
+        )
+    )
+    if nightly:
+        repo.save_order(
+            TradeOrder(
+                order_id=f"o-{key}",
+                decision_id=f"d-{key}",
+                ticker=ticker,
+                market="US",
+                side="BUY",
+                quantity=1,
+                order_type="MARKET",
+                stop_loss=90.0,
+                risk_approved=broker_id is not None,
+                rejection_reasons=[] if broker_id else [f"non-actionable rating={rating}"],
+                submitted_at_utc=ts + timedelta(seconds=2),
+            ),
+            broker_order_id=broker_id,
+        )
+    return ts
+
+
+class TestSpend:
+    def test_empty_window_has_no_per_submit_price(self, client: TestClient) -> None:
+        body = client.get("/v1/diagnostics/spend").json()
+
+        assert body["window_days"] == 30
+        assert body["total"]["councils"] == 0
+        assert body["run_days"] == 0
+        assert body["mean_per_run_day_usd"] is None
+        assert body["spend_per_submit_usd"] is None
+        assert body["last_submit_session"] is None
+        assert body["since_last_submit"]["councils"] == 0
+
+    def test_prices_the_streak_since_the_last_broker_ack(
+        self, client: TestClient, repo: TradeLogRepository
+    ) -> None:
+        # Night 1 bought an order; nights 2 and 3 paid for councils that could
+        # not act — the 2026-11 breaker-latch shape.
+        acked_at = _council(
+            repo, key="n1a", ticker="JPM", days_ago=5, cost=2.50, rating="Overweight",
+            broker_id="brk-1",
+        )
+        _council(repo, key="n1b", ticker="XOM", days_ago=5, cost=2.00)
+        _council(repo, key="n2a", ticker="JPM", days_ago=3, cost=2.25)
+        _council(repo, key="n2b", ticker="XOM", days_ago=3, cost=2.25, rating="Underweight")
+        _council(repo, key="n3a", ticker="JPM", days_ago=1, cost=None)
+        # Asked from the app: real spend, but not the nightly run's.
+        _council(repo, key="ask", ticker="AAPL", days_ago=0.5, cost=1.10, nightly=False)
+
+        body = client.get("/v1/diagnostics/spend").json()
+
+        assert body["scheduled"] == {
+            "councils": 5,
+            "spend_usd": 9.0,
+            "unmeasured": 1,
+            "is_floor": True,
+            "broker_submits": 1,
+        }
+        assert body["on_demand"]["councils"] == 1
+        assert body["on_demand"]["spend_usd"] == pytest.approx(1.10)
+        assert body["total"]["spend_usd"] == pytest.approx(10.10)
+        assert body["run_days"] == 3
+        assert body["mean_per_run_day_usd"] == pytest.approx(3.0)
+        assert body["spend_per_submit_usd"] == pytest.approx(9.0)
+
+        from tradingagents_us.execution.actionability import session_date
+
+        assert body["last_submit_session"] == session_date(acked_at).isoformat()
+        assert body["run_days_since_last_submit"] == 2
+        since = body["since_last_submit"]
+        assert (since["councils"], since["spend_usd"], since["is_floor"]) == (3, 4.5, True)
+        assert since["broker_submits"] == 0
+        assert list(body["by_ticker"])[0] == "JPM"
+        assert body["by_rating"]["Hold"]["councils"] == 4
+
+    def test_window_excludes_older_councils(
+        self, client: TestClient, repo: TradeLogRepository
+    ) -> None:
+        _council(repo, key="old", ticker="AAPL", days_ago=45, cost=2.0, broker_id="brk-old")
+        _council(repo, key="new", ticker="AAPL", days_ago=1, cost=2.0)
+
+        narrow = client.get("/v1/diagnostics/spend", params={"days": 7}).json()
+        wide = client.get("/v1/diagnostics/spend", params={"days": 90}).json()
+
+        assert narrow["total"]["councils"] == 1
+        # The old ack must not price a currently-frozen book as having bought something.
+        assert narrow["spend_per_submit_usd"] is None
+        assert narrow["last_submit_session"] is None
+        assert wide["scheduled"]["broker_submits"] == 1
+
+    def test_days_param_is_bounded(self, client: TestClient) -> None:
+        assert client.get("/v1/diagnostics/spend", params={"days": 0}).status_code == 422
+        assert client.get("/v1/diagnostics/spend", params={"days": 999}).status_code == 422
